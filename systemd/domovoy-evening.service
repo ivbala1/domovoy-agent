@@ -1,0 +1,13 @@
+[Unit]
+Description=Domovoy evening wake: plan check and a question about the day
+After=network-online.target claude-tg-bot.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=@REPO@
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@REPO@/.venv/bin/python -m domovoy.wake --evening
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=300

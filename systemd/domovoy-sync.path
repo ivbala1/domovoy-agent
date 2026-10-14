@@ -1,0 +1,12 @@
+[Unit]
+Description=Domovoy sync right after the agent writes the journal, data or rules
+
+[Path]
+PathChanged=@REPO@/journal
+PathChanged=@REPO@/data
+PathChanged=@REPO@/prompt.md
+PathChanged=@REPO@/diary.md
+Unit=domovoy-sync.service
+
+[Install]
+WantedBy=default.target

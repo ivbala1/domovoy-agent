@@ -1,0 +1,11 @@
+[Unit]
+Description=Domovoy sync every 15 minutes
+
+[Timer]
+OnCalendar=*:02/15
+RandomizedDelaySec=30
+Persistent=false
+Unit=domovoy-sync.service
+
+[Install]
+WantedBy=timers.target

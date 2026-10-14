@@ -1,0 +1,11 @@
+[Unit]
+Description=Domovoy evening wake, daily 20:30
+
+[Timer]
+OnCalendar=*-*-* 20:30:00
+RandomizedDelaySec=60
+Persistent=true
+Unit=domovoy-evening.service
+
+[Install]
+WantedBy=timers.target

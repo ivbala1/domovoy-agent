@@ -1,0 +1,15 @@
+[Unit]
+Description=Domovoy morning wake: the agent in your private chat via Gonets /event
+After=network-online.target claude-tg-bot.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=@REPO@
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@REPO@/.venv/bin/python -m domovoy.wake --morning
+# Photos of the day for the diary right after the morning wake (no-op without Immich settings).
+ExecStopPost=-/usr/bin/systemctl --user start --no-block domovoy-photos.service
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=300

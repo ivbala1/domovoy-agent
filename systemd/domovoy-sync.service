@@ -1,0 +1,15 @@
+[Unit]
+Description=Domovoy sync: commit journal and data, pull, push
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=@REPO@
+Environment=PYTHONUNBUFFERED=1
+# Let the agent finish a batch of writes before committing.
+ExecStartPre=/bin/sleep 10
+ExecStart=@REPO@/.venv/bin/python -m domovoy.sync
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=300

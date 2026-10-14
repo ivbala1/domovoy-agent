@@ -1,0 +1,13 @@
+[Unit]
+Description=Domovoy: photos of the day from Immich into the diary
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=@REPO@
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@REPO@/.venv/bin/python -m domovoy.immich
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=900

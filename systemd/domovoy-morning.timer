@@ -1,0 +1,12 @@
+[Unit]
+Description=Domovoy morning plan, daily 08:30
+
+[Timer]
+OnCalendar=*-*-* 08:30:00
+RandomizedDelaySec=60
+# Catches up after the machine slept; wake.py drops it outside the morning window.
+Persistent=true
+Unit=domovoy-morning.service
+
+[Install]
+WantedBy=timers.target
