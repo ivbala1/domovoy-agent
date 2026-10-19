@@ -37,6 +37,8 @@ def _watch_journal_in_tmp(tmp_path, monkeypatch):
     monkeypatch.setattr(watch, "JOURNAL_DIR", journal)
     # Очередь строк, не дождавшихся замка синхронизации (ревью 11.10.2026).
     monkeypatch.setattr(watch, "JOURNAL_QUEUE_FILE", tmp_path / "watch" / "journal-queue.jsonl")
+    # Файлы слушателя (разбуженное, пульс, замок отправки) тоже во временном каталоге.
+    monkeypatch.setattr(watch, "LISTEN_DIR", tmp_path / "listen")
 
 
 @pytest.fixture(autouse=True)
