@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 from datetime import date, datetime
 
 from . import sync
@@ -34,11 +35,13 @@ from .common import (
     PROMPT_FILE,
     TZ,
     WEEKDAYS_RU,
+    WORKSHOP_FILE,
     ConfigError,
     bot_endpoint,
     load_env,
     post_event,
     read_target,
+    read_workshop_target,
 )
 
 MORNING_WINDOW = (6, 12)   # [06:00, 12:00)
@@ -57,6 +60,12 @@ EVENING_LAST_MINUTE = 30
 # прогона синхронизации (ревью 11.10.2026, третий круг): прогон сам ждёт
 # замок до 90 с, а служба пробуждения ограничена 300 с.
 STATE_WAIT_SEC = 90.0
+
+
+def window_end(now_local: datetime, slot: str) -> float:
+    """Конец окна поиска, Unix-время: бот после него событие не стартует."""
+    end_h, end_m = (SEARCH_WINDOW if slot == "search" else SEARCH_DAY_WINDOW)[1]
+    return now_local.replace(hour=end_h, minute=end_m, second=0, microsecond=0).timestamp()
 
 
 def in_window(now_local: datetime, slot: str) -> bool:
@@ -118,6 +127,55 @@ def build_prompt(slot: str, today: date, prompt_file: str, journal_dir: str) -> 
             "в журнал отклонена или не подтверждена, не повторяй запрос и закончи ответ."
         ).format(day=day, common=common)
     return _("Вечер"), _("Вечер, {day}. {common}").format(day=day, common=common)
+
+
+BRIEF_LIMIT = 6000
+
+
+def workshop_note() -> str:
+    return _("Ты в мастерской Домового: сначала прочитай {workshop_file} (правила мастерской, "
+             "модели субагентов, какие абзацы промта нужны), из {prompt_file} читай только эти абзацы.").format(
+        workshop_file=WORKSHOP_FILE, prompt_file=PROMPT_FILE)
+
+
+def _post_job(args: argparse.Namespace, workshop: tuple[int, int] | None) -> int:
+    """Наряд из лички в мастерскую (проект 22.10.2026): текст наряда пишет
+    личка в файл, событие с секретом шлёт этот скрипт, агенту секрет не виден.
+    Свежая сессия, без звука и без карточки; срок сутки, наряд может ждать
+    конца предыдущего."""
+    if workshop is None:
+        print("domovoy.wake: мастерская не настроена (DOMOVOY_WORKSHOP_CHAT_ID), наряд не отправлен",
+              file=sys.stderr)
+        return 1
+    try:
+        brief = Path(args.brief_file).read_text(encoding="utf-8").strip() if args.brief_file else ""
+    except OSError as e:
+        print(f"domovoy.wake: наряд не прочитан: {e}", file=sys.stderr)
+        return 1
+    if not brief:
+        print("domovoy.wake: нужен непустой --brief-file", file=sys.stderr)
+        return 1
+    if len(brief) > BRIEF_LIMIT:
+        print(f"domovoy.wake: наряд длиннее {BRIEF_LIMIT} знаков, сократи (чужую переписку ссылкой)",
+              file=sys.stderr)
+        return 1
+    chat_id, thread_id = workshop
+    first = " ".join(brief.splitlines()[0].split())[:50]
+    title = _("Наряд: {first}").format(first=first)
+    prompt = _("[Наряд мастерской] {note}\n\nНаряд:\n{brief}").format(note=workshop_note(), brief=brief)
+    payload = {"source": _("Домовой"), "title": title, "text": "", "wake": True, "prompt": prompt,
+               "chat_id": chat_id, "thread_id": thread_id, "fresh": True, "silent": True,
+               "notice": False, "expires_in": 24 * 3600}
+    if args.dry_run:
+        print(f"[dry-run] chat={chat_id} thread={thread_id}\n{title}\n{prompt}")
+        return 0
+    url, secret = bot_endpoint()
+    ok, info = post_event(url, secret, payload)
+    if not ok:
+        print(f"domovoy.wake: наряд не принят: {info}", file=sys.stderr)
+        return 1
+    print("domovoy.wake: наряд принят мастерской")
+    return 0
 
 
 def refresh() -> str:
@@ -204,6 +262,9 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--search-day", action="store_const", const="search_day", dest="slot")
     g.add_argument("--midday", action="store_const", const="midday", dest="slot")
     g.add_argument("--evening", action="store_const", const="evening", dest="slot")
+    g.add_argument("--job", action="store_const", const="job", dest="slot",
+                   help="наряд мастерской: текст из --brief-file (проект 22.10.2026)")
+    parser.add_argument("--brief-file", default="", help="файл с нарядом для --job")
     parser.add_argument("--dry-run", action="store_true", help="показать событие, не слать и git не трогать")
     parser.add_argument("--force", action="store_true", help="игнорировать окно времени")
     parser.add_argument("--day", default="", help="дата ГГГГ-ММ-ДД вместо сегодняшней (ручной запуск)")
@@ -212,9 +273,14 @@ def main(argv: list[str] | None = None) -> int:
     load_env()
     try:
         chat_id, thread_id = read_target()
+        # Мастерская нужна только поискам и нарядам: опечатка в её настройке
+        # не должна останавливать утро и вечер.
+        workshop = read_workshop_target() if args.slot in ("search", "search_day", "job") else None
     except ConfigError as e:
         print(f"domovoy.wake: {e}, выходим", file=sys.stderr)
         return 1
+    if args.slot == "job":
+        return _post_job(args, workshop)
 
     now_local = datetime.now(TZ)
     real_today = now_local.date()
@@ -267,10 +333,18 @@ def main(argv: list[str] | None = None) -> int:
         payload["fresh"] = True
         payload["silent"] = True
     if args.slot == "search_day":
-        # Поиск в 15:00 идёт в дневной сессии, не свежей: Иван днём отвечает
-        # на кнопки и вопросы, свежая сессия оборвала бы их контекст. Без
-        # звука: Иван может быть за рулём (решение Ивана 22.10.2026).
+        # Без звука: Иван может быть за рулём (решение Ивана 22.10.2026). В
+        # мастерской сессия свежая (ниже); без неё поиск идёт в дневной сессии
+        # лички, не свежей: Иван днём отвечает на кнопки и вопросы.
         payload["silent"] = True
+    if args.slot in ("search", "search_day") and workshop is not None:
+        # Оба поиска идут в мастерской (решение Ивана 22.10.2026, решение 4):
+        # личка свободна, утро не ждёт поиска. Сессия там всегда свежая:
+        # задание по кнопке отклика самодостаточно, контекст поиска ему не нужен.
+        chat_id, thread_id = workshop
+        payload["chat_id"] = chat_id
+        payload["fresh"] = True
+        payload["prompt"] = workshop_note() + "\n\n" + payload["prompt"]
     if args.slot in ("morning", "evening", "search", "search_day"):
         # Без карточки «🔔 Домовой: Утро», «Вечер» и «Поиск»: текста у события нет,
         # пустая карточка приходила раньше ответа, первым теперь сам ответ
@@ -293,6 +367,9 @@ def main(argv: list[str] | None = None) -> int:
     gate = None
     if args.slot in ("search", "search_day") and not args.force:
         gate = lambda: in_window(datetime.now(TZ), args.slot)  # noqa: E731
+        # Срок и у бота: принятое событие, которое ждало рестарта или чужого
+        # рана, после конца окна не стартует (ревью Codex 22.10.2026).
+        payload["expires_at"] = window_end(now_local, args.slot)
     url, secret = bot_endpoint()
     ok, info = post_event(url, secret, payload, still_wanted=gate)
     if not ok and info == EXPIRED:

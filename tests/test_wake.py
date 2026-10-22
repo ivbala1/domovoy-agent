@@ -4,7 +4,9 @@ from __future__ import annotations
 import io
 import os
 import sys
+import tempfile
 import unittest
+from types import SimpleNamespace
 from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -371,6 +373,29 @@ class RefreshTests(unittest.TestCase):
 
 
 class PostEventTests(unittest.TestCase):
+    def test_wake_gets_one_key_for_all_retries(self):
+        """Ревью Codex 22.10.2026: повторы внутри вызова бот узнаёт по ключу."""
+        seen = []
+
+        def flaky(*a, json=None, **kw):
+            seen.append(json.get("key"))
+            if len(seen) == 1:
+                raise httpx.ConnectError("refused")
+            return SimpleNamespace(status_code=200, text="{}")
+
+        with patch.object(common.httpx, "post", side_effect=flaky), patch.object(common.time, "sleep"):
+            ok, _ = common.post_event("http://127.0.0.1:1/event", "", {"wake": True})
+            common.post_event("http://127.0.0.1:1/event", "", {"wake": False})
+        self.assertTrue(ok)
+        self.assertEqual(len(set(seen[:2])), 1)
+        self.assertTrue(seen[0].startswith("once-"))
+        self.assertIsNone(seen[2])  # уведомление без пробуждения ключа не несёт
+
+    def test_own_key_kept_and_stable(self):
+        self.assertEqual(common.event_key("listen", ["b", "a"]), common.event_key("listen", ["a", "b"]))
+        self.assertNotEqual(common.event_key("listen", ["a"]), common.event_key("watch", ["a"]))
+        self.assertRegex(common.event_key("watch", ["x"]), r"^[A-Za-z0-9._:-]{8,128}$")
+
     def test_retries_on_connect_error_then_gives_up(self):
         calls = []
 
@@ -462,5 +487,61 @@ class PostEventTests(unittest.TestCase):
         self.assertEqual(post.call_count, common.BUSY_RETRIES)
 
 
+class WindowEndTests(unittest.TestCase):
+    def test_window_end_timestamp(self):
+        at = datetime(2026, 10, 23, 7, 45, tzinfo=wake.TZ)
+        self.assertEqual(wake.window_end(at, "search"), datetime(2026, 10, 23, 8, 0, tzinfo=wake.TZ).timestamp())
+        self.assertEqual(wake.window_end(at.replace(hour=15), "search_day"),
+                         datetime(2026, 10, 23, 15, 30, tzinfo=wake.TZ).timestamp())
+
+
+class WorkshopWakeTests(unittest.TestCase):
+    """Мастерская (проект 22.10.2026): поиски и наряды идут в её тему."""
+
+    def setUp(self):
+        patcher = patch.object(wake, "refresh", return_value="")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _run(self, argv, **env):
+        with patch.dict(os.environ, _env(DOMOVOY_CHAT_ID="183", **env), clear=True), \
+                patch.object(wake, "load_env"), patch.object(wake, "post_event", return_value=(True, "ok")) as post:
+            code = wake.main(argv)
+        return code, post
+
+    def test_search_goes_to_workshop_fresh(self):
+        code, post = self._run(["--search-day", "--force"], DOMOVOY_WORKSHOP_CHAT_ID="-100", DOMOVOY_WORKSHOP_THREAD_ID="77")
+        payload = post.call_args.args[2]
+        self.assertEqual((code, payload["chat_id"], payload["thread_id"], payload["fresh"]), (0, -100, 77, True))
+        self.assertIn("workshop.md", payload["prompt"])
+
+    def test_search_stays_in_private_without_workshop(self):
+        code, post = self._run(["--search-day", "--force"])
+        self.assertEqual(post.call_args.args[2]["chat_id"], 183)
+
+    def test_job_needs_workshop_and_brief(self):
+        with tempfile.TemporaryDirectory() as d:
+            brief = Path(d) / "job.md"
+            brief.write_text("Слова Ивана: посчитай отклики за неделю", encoding="utf-8")
+            code, post = self._run(["--job", "--brief-file", str(brief)])
+            self.assertEqual(code, 1)
+            post.assert_not_called()
+            code, post = self._run(["--job", "--brief-file", str(brief)],
+                                   DOMOVOY_WORKSHOP_CHAT_ID="-100", DOMOVOY_WORKSHOP_THREAD_ID="77")
+            payload = post.call_args.args[2]
+            self.assertEqual(code, 0)
+            self.assertEqual((payload["thread_id"], payload["fresh"], payload["notice"]), (77, True, False))
+            self.assertIn("посчитай отклики", payload["prompt"])
+            code, post = self._run(["--job", "--brief-file", str(Path(d) / "нет.md")],
+                                   DOMOVOY_WORKSHOP_CHAT_ID="-100", DOMOVOY_WORKSHOP_THREAD_ID="77")
+            self.assertEqual(code, 1)
+
+    def test_half_configured_workshop_is_error(self):
+        code, post = self._run(["--search-day", "--force"], DOMOVOY_WORKSHOP_CHAT_ID="-100")
+        self.assertEqual(code, 1)
+        post.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
+

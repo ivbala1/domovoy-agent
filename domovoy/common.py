@@ -6,9 +6,11 @@
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import time
-from collections.abc import Callable
+import uuid
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -23,6 +25,8 @@ JOURNAL_DIR = REPO_ROOT / "journal"
 # Правила дневника отдельным коротким файлом: его называет каждое пробуждение,
 # иначе раздел в большом промте забывается первым.
 DIARY_RULES_FILE = REPO_ROOT / "diary.md"
+# Паспорт мастерской: правила долгой работы в своей теме (проект 22.10.2026).
+WORKSHOP_FILE = REPO_ROOT / "workshop.md"
 CONTACTS_FILE = REPO_ROOT / "data" / "voronka.md"
 # Состояние машины (момент последней проверки сторожа, замок синхронизации)
 # живёт вне репозитория: в git ему не место, и сессия claude сторожа не должна
@@ -105,10 +109,35 @@ def read_target() -> tuple[int, int | None]:
     return chat_id, thread_id
 
 
+def read_workshop_target() -> tuple[int, int] | None:
+    """Тема мастерской (DOMOVOY_WORKSHOP_CHAT_ID и DOMOVOY_WORKSHOP_THREAD_ID)
+    или None, если она не настроена: тогда долгая работа идёт в личке, как
+    раньше. Задана наполовину или не числами: ConfigError (проект 22.10.2026)."""
+    raw_chat = os.environ.get("DOMOVOY_WORKSHOP_CHAT_ID", "").strip()
+    raw_thread = os.environ.get("DOMOVOY_WORKSHOP_THREAD_ID", "").strip()
+    if not raw_chat and not raw_thread:
+        return None
+    try:
+        chat_id, thread_id = int(raw_chat), int(raw_thread)
+    except ValueError:
+        raise ConfigError("DOMOVOY_WORKSHOP_CHAT_ID/DOMOVOY_WORKSHOP_THREAD_ID не числа") from None
+    if chat_id == 0 or thread_id <= 0:
+        raise ConfigError("DOMOVOY_WORKSHOP_CHAT_ID/DOMOVOY_WORKSHOP_THREAD_ID недопустимы")
+    return chat_id, thread_id
+
+
 def bot_endpoint() -> tuple[str, str]:
     url = os.environ.get("DOMOVOY_BOT_URL", "").strip() or DEFAULT_BOT_URL
     secret = os.environ.get("DOMOVOY_BOT_SECRET", "").strip()
     return url, secret
+
+
+def event_key(kind: str, parts: Iterable[str]) -> str:
+    """Ключ повтора пробуждения: те же поводы дают тот же ключ, и бот второй
+    раз их не разбудит. Ответ 200 мог потеряться, а слушатель и сторож после
+    неудачи шлют снова (ревью Codex 22.10.2026)."""
+    digest = hashlib.sha256("\n".join(sorted(parts)).encode("utf-8")).hexdigest()[:40]
+    return f"{kind}-{digest}"
 
 
 def post_event(url: str, secret: str, payload: dict,
@@ -122,8 +151,12 @@ def post_event(url: str, secret: str, payload: dict,
     на этот предел рассчитан срок доставки у сторожа. Ответ 503 (бот готовится
     к перезапуску, событие не принято) повторяется отдельно, до BUSY_RETRIES.
     still_wanted проверяется перед каждой попыткой: событие со сроком (поиск
-    до 08:00) после срока не уходит и после повторов (ревью Codex 14.10.2026)."""
+    до 08:00) после срока не уходит и после повторов (ревью Codex 14.10.2026).
+    У пробуждения без своего ключа (event_key) ключ на этот вызов: повторы
+    внутри него бот не задвоит."""
     headers = {"X-Approve-Token": secret} if secret else {}
+    if payload.get("wake") and not payload.get("key"):
+        payload = {**payload, "key": f"once-{uuid.uuid4().hex}"}
     retried_502 = False
     connects = busy = 0
     while True:

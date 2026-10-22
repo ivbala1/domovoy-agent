@@ -61,7 +61,8 @@ from typing import IO, NamedTuple
 from .common import REPO_ROOT, STATE_ROOT, TZ, ConfigError, bot_endpoint, load_env, post_event, read_target
 from .i18n import _
 
-DATA_PATHS = ("prompt.md", "diary.md", "journal", "data")
+# reviews/: еженедельный разбор (domovoy.review), ревью Codex 22.10.2026.
+DATA_PATHS = ("prompt.md", "diary.md", "journal", "data", "reviews")
 REMOTE = "origin"
 BRANCH = "main"
 GIT_TIMEOUT = 60
