@@ -39,6 +39,8 @@ def _watch_journal_in_tmp(tmp_path, monkeypatch):
     monkeypatch.setattr(watch, "JOURNAL_QUEUE_FILE", tmp_path / "watch" / "journal-queue.jsonl")
     # Файлы слушателя (разбуженное, пульс, замок отправки) тоже во временном каталоге.
     monkeypatch.setattr(watch, "LISTEN_DIR", tmp_path / "listen")
+    # Срочное без ответа: тесты не читают живой data/srochno.md.
+    monkeypatch.setattr(watch, "SROCHNO_FILE", tmp_path / "srochno.md")
 
 
 @pytest.fixture(autouse=True)

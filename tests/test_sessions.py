@@ -207,6 +207,13 @@ class FilterTests(Projects):
         self.write([rec, user(at(7, 50), "ок", entrypoint="sdk-cli")])
         self.assertEqual(self.replies(), [])
 
+    def test_search_day_wake_is_own_dialog_too(self):
+        # Поиск 15:00 идёт в дневной сессии: его событие не реплика Ивана.
+        from domovoy import wake as wakemod
+        _, text = wakemod.build_prompt("search_day", DAY, "/x/prompt.md", "/x/journal")
+        self.assertTrue(sessions.is_wake_event(text))
+        self.assertTrue(sessions.is_wake_event(f"⚠️ ПРОБНЫЙ ЗАПУСК, дата подставлена.\n\n{text}"))
+
     def test_wake_is_recognised_without_entrypoint_and_in_trial_run(self):
         rec = user(at(8, 30), f"⚠️ ПРОБНЫЙ ЗАПУСК, дата подставлена.\n\nУтро, 2026-10-04 (воскресенье). {sessions.OWN_DIALOG_MARK} /x")
         del rec["entrypoint"]

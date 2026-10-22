@@ -45,6 +45,14 @@ class WindowTests(unittest.TestCase):
         self.assertFalse(wake.in_window(_at(6, 0), "search"))
         self.assertFalse(wake.in_window(_at(9, 0), "search"))
 
+    def test_search_day_window(self):
+        """Поиск днём только 15:00-15:30, поздний догон молчит."""
+        self.assertTrue(wake.in_window(_at(15, 0), "search_day"))
+        self.assertTrue(wake.in_window(_at(15, 29), "search_day"))
+        self.assertFalse(wake.in_window(_at(14, 59), "search_day"))
+        self.assertFalse(wake.in_window(_at(15, 30), "search_day"))
+        self.assertFalse(wake.in_window(_at(7, 30), "search_day"))
+
     def test_midday_window(self):
         self.assertTrue(wake.in_window(_at(14, 0), "midday"))
         self.assertTrue(wake.in_window(_at(12, 0), "midday"))
@@ -91,6 +99,13 @@ class PromptTests(unittest.TestCase):
         self.assertIn("абзац «Поиск»", p)
         self.assertIn("J", p)
         self.assertNotIn("Утро", p)
+
+    def test_search_day_is_its_own_moment(self):
+        t, p = wake.build_prompt("search_day", date(2026, 10, 22), "P", "J")
+        self.assertEqual(t, "Поиск днём")
+        self.assertTrue(p.startswith("Поиск днём, 2026-10-22 (четверг). Действуй по промту Домового P"))
+        self.assertIn("абзац «Поиск днём»", p)
+        self.assertNotIn("Человека за клавиатурой нет", p)
 
 class MainTests(unittest.TestCase):
     def setUp(self):
@@ -270,6 +285,37 @@ class MainTests(unittest.TestCase):
         self.assertIs(payload["silent"], True)
         self.assertIs(payload["notice"], False)
         self.assertIn("абзац «Поиск»", payload["prompt"])
+
+    def test_search_day_payload(self):
+        """Поиск 15:00: дневная сессия (не свежая), без звука, без карточки
+        (решение Ивана 22.10.2026)."""
+        with patch.dict(os.environ, _env(DOMOVOY_CHAT_ID="183"), clear=True), patch.object(wake, "load_env"), \
+                patch.object(wake, "post_event", return_value=(True, "ok")) as post, \
+                patch.object(wake, "datetime") as dt:
+            dt.now.return_value = _at(15, 0)
+            rc = wake.main(["--search-day"])
+        self.assertEqual(rc, 0)
+        payload = post.call_args.args[2]
+        self.assertEqual(payload["title"], "Поиск днём")
+        self.assertNotIn("fresh", payload)
+        self.assertIs(payload["silent"], True)
+        self.assertIs(payload["notice"], False)
+        self.assertIsNotNone(post.call_args.kwargs["still_wanted"])
+
+    def test_search_day_window_closed_during_refresh(self):
+        """Начал в 15:29, синхронизация кончилась в 15:31: поиск днём не уходит."""
+        with patch.dict(os.environ, _env(DOMOVOY_CHAT_ID="183"), clear=True), patch.object(wake, "load_env"), \
+                patch.object(common.httpx, "post") as post, patch.object(wake, "datetime") as dt:
+            dt.now.side_effect = [_at(15, 29)] + [_at(15, 31)] * 3
+            self.assertEqual(wake.main(["--search-day"]), 0)
+        post.assert_not_called()
+
+    def test_search_day_outside_window_is_silent(self):
+        with patch.dict(os.environ, _env(DOMOVOY_CHAT_ID="183"), clear=True), patch.object(wake, "load_env"), \
+                patch.object(wake, "post_event") as post, patch.object(wake, "datetime") as dt:
+            dt.now.return_value = _at(15, 40)
+            self.assertEqual(wake.main(["--search-day"]), 0)
+        post.assert_not_called()
 
     def test_search_window_closed_during_refresh(self):
         """Начал в 07:59, синхронизация кончилась в 08:02: поиск не уходит."""

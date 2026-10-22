@@ -2,7 +2,8 @@
 
 Запускается таймерами domovoy-morning.timer (08:30), domovoy-evening.timer
 (20:30 по местному времени) и с 14.10.2026 domovoy-search.timer (07:30 каждый день, до 18.10.2026 в будни:
-поиск вакансий отдельным раном до утра, чтобы утро его не ждало); дневной
+поиск вакансий отдельным раном до утра, чтобы утро его не ждало), с 22.10.2026
+domovoy-search-day.timer (15:00 каждый день: второй проход по свежему); дневной
 слот 14:00 без таймера с 22.09.2026, только ручной запуск --midday. Модуль ничего не
 сочиняет и claude сам не зовёт: он подтягивает репозиторий (чтобы агент читал
 свежий промт), шлёт боту POST /event с wake=true, и дальше работает обычная
@@ -10,7 +11,7 @@ Claude-сессия диалога. Правила бот подмешивает
 состояние живёт в журнале и в общей памяти, ответы Ивана продолжают ту же сессию.
 
 Единственный гейт: окно местного времени (утро 06:00-12:00, поиск
-07:30-08:00, день 12:00-18:00, вечер 19:00-23:30). Persistent=true догоняет пропуск после сна ПК,
+07:30-08:00, поиск днём 15:00-15:30, день 12:00-18:00, вечер 19:00-23:30). Persistent=true догоняет пропуск после сна ПК,
 но утренний план в 15:00 неуместен. Всё остальное (спросить ли ещё раз, что
 переносить, писать ли журнал) решает агент, а не программа: указание Ивана
 13.09.2026.
@@ -46,6 +47,9 @@ MORNING_WINDOW = (6, 12)   # [06:00, 12:00)
 # сессией стирал утреннюю; пропущенное берёт следующий поиск окном 1-3 дня.
 # С 07:30, а не раньше: догон до 07:30 и плановый запуск дали бы два поиска.
 SEARCH_WINDOW = ((7, 30), (8, 0))
+# [15:00, 15:30): второй проход по свежему (решение Ивана 22.10.2026). Догон
+# после сна позже 15:30 молчит: свежее возьмёт поиск следующего утра.
+SEARCH_DAY_WINDOW = ((15, 0), (15, 30))
 MIDDAY_WINDOW = (12, 18)   # [12:00, 18:00): узкая проверка, план и вопросы не сюда
 EVENING_WINDOW = (19, 23)  # [19:00, 23:30]
 EVENING_LAST_MINUTE = 30
@@ -61,6 +65,8 @@ def in_window(now_local: datetime, slot: str) -> bool:
         return MORNING_WINDOW[0] <= h < MORNING_WINDOW[1]
     if slot == "search":
         return SEARCH_WINDOW[0] <= (h, m) < SEARCH_WINDOW[1]
+    if slot == "search_day":
+        return SEARCH_DAY_WINDOW[0] <= (h, m) < SEARCH_DAY_WINDOW[1]
     if slot == "midday":
         return MIDDAY_WINDOW[0] <= h < MIDDAY_WINDOW[1]
     if h < EVENING_WINDOW[0]:
@@ -96,6 +102,13 @@ def build_prompt(slot: str, today: date, prompt_file: str, journal_dir: str) -> 
             "журнал в {journal_dir} (файлы ГГГГ-ММ.md). Коротко, для телефона, без markdown. "
             "Человека за клавиатурой нет: если запись в журнал отклонена или не подтверждена, "
             "не повторяй запрос и закончи ответ."
+        ).format(day=day, prompt_file=prompt_file, journal_dir=journal_dir)
+    if slot == "search_day":
+        # Иван днём не спит, поэтому без оговорки «человека нет»: что делать,
+        # написано в промте (абзац «Поиск днём»).
+        return _("Поиск днём"), _(
+            "Поиск днём, {day}. Действуй по промту Домового {prompt_file}, абзац «Поиск днём»; "
+            "журнал в {journal_dir} (файлы ГГГГ-ММ.md). Коротко, для телефона, без markdown."
         ).format(day=day, prompt_file=prompt_file, journal_dir=journal_dir)
     if slot == "midday":
         # Что именно проверять и когда молчать, написано в промте (абзац «Днём»):
@@ -188,6 +201,7 @@ def main(argv: list[str] | None = None) -> int:
     g = parser.add_mutually_exclusive_group(required=True)
     g.add_argument("--morning", action="store_const", const="morning", dest="slot")
     g.add_argument("--search", action="store_const", const="search", dest="slot")
+    g.add_argument("--search-day", action="store_const", const="search_day", dest="slot")
     g.add_argument("--midday", action="store_const", const="midday", dest="slot")
     g.add_argument("--evening", action="store_const", const="evening", dest="slot")
     parser.add_argument("--dry-run", action="store_true", help="показать событие, не слать и git не трогать")
@@ -252,7 +266,12 @@ def main(argv: list[str] | None = None) -> int:
         # и узнает итог поиска из журнала (решение Ивана 14.10.2026).
         payload["fresh"] = True
         payload["silent"] = True
-    if args.slot in ("morning", "evening", "search"):
+    if args.slot == "search_day":
+        # Поиск в 15:00 идёт в дневной сессии, не свежей: Иван днём отвечает
+        # на кнопки и вопросы, свежая сессия оборвала бы их контекст. Без
+        # звука: Иван может быть за рулём (решение Ивана 22.10.2026).
+        payload["silent"] = True
+    if args.slot in ("morning", "evening", "search", "search_day"):
         # Без карточки «🔔 Домовой: Утро», «Вечер» и «Поиск»: текста у события нет,
         # пустая карточка приходила раньше ответа, первым теперь сам ответ
         # (просьба Ивана 14.10.2026). Старый бот поле не знает и шлёт карточку
@@ -269,9 +288,10 @@ def main(argv: list[str] | None = None) -> int:
         payload["prompt"] = f"{warning}\n\n{payload['prompt']}"
     # Поиск обязан кончиться до утра: окно проверяется ещё раз перед каждой
     # попыткой отправки, синхронизация и повторы занимают минуты (ревью Codex
-    # 14.10.2026). Утро и вечер с широким окном так не ограничены.
+    # 14.10.2026). Поиск днём так же: окно 15:30. Утро и вечер с широким
+    # окном так не ограничены.
     gate = None
-    if args.slot == "search" and not args.force:
+    if args.slot in ("search", "search_day") and not args.force:
         gate = lambda: in_window(datetime.now(TZ), args.slot)  # noqa: E731
     url, secret = bot_endpoint()
     ok, info = post_event(url, secret, payload, still_wanted=gate)

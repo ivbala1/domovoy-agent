@@ -54,7 +54,7 @@ OWN_DIALOG_MARK = N_("Действуй по промту Домового")
 _WAKE_RE_RU = re.compile(
     r"(?:\[[^\]]*\]\s*)*(?:⚠\ufe0f? Синхронизация репозитория Домового[^\n]*\s*)?"
     r"(?:⚠\ufe0f? ПРОБНЫЙ ЗАПУСК[^\n]*\s*)?"
-    r"(Утро|Поиск|День|Вечер|Сторож)(?: \(пробный запуск\))?, \d{4}-\d{2}-\d{2}"
+    r"(Утро|Поиск днём|Поиск|День|Вечер|Сторож)(?: \(пробный запуск\))?, \d{4}-\d{2}-\d{2}"
 )
 # Пробуждение приходит только через бота. Поле entrypoint необязательное,
 # поэтому без него тоже; в настольной сессии и терминале это вставка Ивана.
@@ -209,7 +209,7 @@ def _wake_re() -> re.Pattern:
     предупреждения перед ним любой строкой со значком ⚠️."""
     if language() == SOURCE_LANG:
         return _WAKE_RE_RU
-    titles = "|".join(re.escape(_(t)) for t in ("Утро", "Поиск", "День", "Вечер")) + "|Сторож"
+    titles = "|".join(re.escape(_(t)) for t in ("Утро", "Поиск днём", "Поиск", "День", "Вечер")) + "|Сторож"
     return re.compile(r"(?:\[[^\]]*\]\s*)*(?:⚠\ufe0f?[^\n]*\s*)*"
                       r"(" + titles + r")(?: \([^)\n]*\))?, \d{4}-\d{2}-\d{2}")
 
@@ -428,7 +428,7 @@ def env_refusal(environ=os.environ) -> str:
 
 
 # Виды личного закрепления, которые роутер памяти пишет и отдаёт личную память
-# (resolve_pin и handle_session в ~/src/svod/lib/memorycontext.py). forked там
+# (resolve_pin и handle_session в ~/src/svod/engine/lib/memorycontext.py). forked там
 # получает только контракт. Список разрешающий: новый вид у роутера здесь
 # будет отказом, пока его не впишут.
 PERSONAL_PIN_SOURCES = ("default-personal", "ambiguous-first-message", "resumed-without-pin")

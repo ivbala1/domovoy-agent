@@ -114,7 +114,7 @@ Try a wake-up without waiting for the timer:
 | `diary.md` | rules for the diary (from `diary.example.md`): what goes there and how to retell |
 | `journal/YYYY-MM.md` | the assistant's journal, one file per month |
 | `data/` | your tables (whatever the rules mention) |
-| `domovoy/wake.py` | wake-ups (`--morning`, `--evening`, `--midday`, `--search`) |
+| `domovoy/wake.py` | wake-ups (`--morning`, `--evening`, `--midday`, `--search`, `--search-day`) |
 | `domovoy/sync.py` | git sync of data with conflict handling |
 | `domovoy/diary.py` | diary commands: `add`, `fact`, `mark`, `rollup`, `status`, `feed`, `commit`, `sessions` |
 | `domovoy/sessions.py` | what you said in other Claude Code sessions today |
