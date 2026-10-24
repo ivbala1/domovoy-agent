@@ -143,6 +143,16 @@ class AddTests(VaultCase):
         self.assertIn("у «Кто-то» нет карточки", out)
         self.assertNotIn("у «Тома» нет карточки", out)
 
+    def test_family_card_in_family_folder(self):
+        (self.vault / "Семья" / "Аня").mkdir(parents=True)
+        (self.vault / "Семья" / "Аня" / "Аня.md").write_text("x", encoding="utf-8")
+        (self.vault / "Петя").mkdir()
+        (self.vault / "Петя" / "Петя.md").write_text("x", encoding="utf-8")
+        rc, out = self.run_cli("add", "--label", "день", "--people", "Аня", "Петя",
+                               stdin="Гуляли.\n")
+        self.assertEqual(rc, diary.OK)
+        self.assertNotIn("нет карточки", out)
+
     def test_empty_text_and_bad_label_refused(self):
         self.assertEqual(self.run_cli("add", "--label", "день", stdin="  \n")[0], diary.ERROR)
         self.assertEqual(self.run_cli("add", "--label", "два слова", stdin="Текст.\n")[0], diary.ERROR)

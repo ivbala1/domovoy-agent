@@ -538,8 +538,11 @@ def add_fm_values(day_text: str, key: str, values: list[str]) -> str:
 
 def has_person_card(vault: Path, name: str) -> bool:
     """Списки «когда виделись» в карточках ищут имя ровно как назван файл
-    карточки, поэтому имя без карточки стоит назвать вслух."""
-    return (vault / "Люди" / f"{name}.md").is_file() or (vault / name / f"{name}.md").is_file()
+    карточки, поэтому имя без карточки стоит назвать вслух. Близкие живут
+    своей папкой в «Семья» (решение Ивана 25.10.2026), раньше в корне."""
+    return any(p.is_file() for p in (vault / "Люди" / f"{name}.md",
+                                     vault / "Семья" / name / f"{name}.md",
+                                     vault / name / f"{name}.md"))
 
 
 # --- лента ---------------------------------------------------------------
