@@ -942,6 +942,18 @@ class CommitTests(VaultCase):
         self.assertEqual(diary.commit(self.vault, "дневник: перенос"), "закоммичено")
         self.assertEqual(self._git("status", "--porcelain"), "")
 
+    def test_week_review_file_inside_diary_folder_is_committed(self):
+        """26.10.2026: подробности разбора недели лежат в «Дневник/_Недели Домового»
+        и идут в коммит вместе с дневником, отдельного пути в COMMIT_PATHS нет."""
+        self._init()
+        week = self.vault / "Дневник" / "_Недели Домового" / "2026-W43.md"
+        week.parent.mkdir(parents=True, exist_ok=True)
+        week.write_text("разбор\n", encoding="utf-8")
+        self.assertEqual(diary.commit(self.vault, "Домовой: разбор недели 2026-W43"), "закоммичено")
+        self.assertIn("Дневник/_Недели Домового/2026-W43.md",
+                      self._git("-c", "core.quotePath=false", "show", "--name-only", "--format=", "HEAD"))
+        self.assertEqual(self._git("status", "--porcelain"), "")
+
     def test_failed_commit_command_exits_with_error(self):
         """Ревью 11.10.2026 (C39): команда commit при сбое отвечала 0."""
         self._init()
