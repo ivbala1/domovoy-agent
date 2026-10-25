@@ -129,6 +129,28 @@ def build_prompt(slot: str, today: date, prompt_file: str, journal_dir: str) -> 
     return _("Вечер"), _("Вечер, {day}. {common}").format(day=day, common=common)
 
 
+def app_note(today: date) -> str:
+    """Незакрытые «В приложение» за 14 дней для события «Утро»: список собирает
+    код, утру не надо искать по журналу (разбор W43, предложение 5, решение
+    Ивана 25.10.2026). Без модуля разбора (открытая копия) пусто."""
+    try:
+        from .selfcheck import APP_OPEN_DAYS, app_queue
+    except ImportError:
+        return ""
+    try:
+        lines = app_queue(today, JOURNAL_DIR)
+    except Exception as e:  # noqa: BLE001  утро важнее списка
+        print(f"domovoy.wake: список «В приложение» не собран: {type(e).__name__}", file=sys.stderr)
+        return ""
+    if lines is None:
+        return _("Журнал за {days} дней не прочитан: незакрытые «В приложение» найди по журналу сам.").format(
+            days=APP_OPEN_DAYS)
+    if not lines:
+        return _("Незакрытых «В приложение» за {days} дней нет (проверил код).").format(days=APP_OPEN_DAYS)
+    return _("Незакрытые «В приложение» за {days} дней (собрал код по журналу, заново не искать):\n{lines}").format(
+        days=APP_OPEN_DAYS, lines="\n".join(lines))
+
+
 BRIEF_LIMIT = 6000
 
 
@@ -303,6 +325,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     title, prompt = build_prompt(args.slot, today, str(PROMPT_FILE), str(JOURNAL_DIR))
+    if args.slot == "morning" and (note := app_note(today)):
+        prompt = f"{prompt}\n\n{note}"
     if today != real_today:
         title = _("{title} (пробный запуск)").format(title=title)
         prompt = _(
