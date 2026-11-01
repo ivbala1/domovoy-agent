@@ -10,9 +10,9 @@ domovoy-search-day.timer (15:00 каждый день: второй проход
 Claude-сессия диалога. Правила бот подмешивает пометкой /scope этого чата,
 состояние живёт в журнале и в общей памяти, ответы Ивана продолжают ту же сессию.
 
-Единственный гейт: окно местного времени (утро 06:00-12:00, поиск
-07:30-08:00, поиск днём 15:00-15:30, день 12:00-18:00, вечер 19:00-23:30). Persistent=true догоняет пропуск после сна ПК,
-но утренний план в 15:00 неуместен. Всё остальное (спросить ли ещё раз, что
+Единственный гейт: окно местного времени (утро 08:30-12:00, поиск
+07:30-08:00, поиск днём 15:00-15:30, день 12:00-18:00, вечер 20:30-23:30). Persistent=true догоняет пропуск после сна ПК,
+но утренний план в 15:00 неуместен, а догон до планового часа пришёл за прошлый день. Всё остальное (спросить ли ещё раз, что
 переносить, писать ли журнал) решает агент, а не программа: указание Ивана
 13.09.2026.
 
@@ -22,17 +22,21 @@ Exit-коды: 0 тихо или успех, 1 ошибка конфига ил�
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import sys
 from pathlib import Path
 from datetime import date, datetime
 
 from . import sync
+from .wakefail import forget_wake_failures, note_wake_failure, wake_failures  # noqa: F401
 from .i18n import _
 from .common import (
     DIARY_RULES_FILE,
     EXPIRED,
     JOURNAL_DIR,
     PROMPT_FILE,
+    STATE_ROOT,
     TZ,
     WEEKDAYS_RU,
     WORKSHOP_FILE,
@@ -44,7 +48,12 @@ from .common import (
     read_workshop_target,
 )
 
-MORNING_WINDOW = (6, 12)   # [06:00, 12:00)
+# Окна утра и вечера с планового часа таймера, а не раньше (аудит 11.2026):
+# догон Persistent=true до 08:30 (20:30) пришёл за прошлый день, ПК спал через
+# вчерашний запуск. Сегодняшний плановый ещё впереди, и с ранним окном утро
+# (вечер) пришло бы дважды, вторая свежая сессия стёрла бы первую. Тот же
+# приём, что у поиска (окно с 07:30).
+MORNING_WINDOW = ((8, 30), (12, 0))   # [08:30, 12:00)
 # [07:30, 08:00): поиск кончается до утра 08:30. Догон после сна ПК позже
 # 08:00 молчит: иначе поиск держал бы утро в очереди или шёл за ним и свежей
 # сессией стирал утреннюю; пропущенное берёт следующий поиск окном 1-3 дня.
@@ -54,8 +63,7 @@ SEARCH_WINDOW = ((7, 30), (8, 0))
 # после сна позже 15:30 молчит: свежее возьмёт поиск следующего утра.
 SEARCH_DAY_WINDOW = ((15, 0), (15, 30))
 MIDDAY_WINDOW = (12, 18)   # [12:00, 18:00): узкая проверка, план и вопросы не сюда
-EVENING_WINDOW = (19, 23)  # [19:00, 23:30]
-EVENING_LAST_MINUTE = 30
+EVENING_WINDOW = ((20, 30), (23, 30))  # [20:30, 23:30]
 # Сколько пробуждение ждёт замок, чтобы прочитать причину остановки идущего
 # прогона синхронизации (ревью 11.10.2026, третий круг): прогон сам ждёт
 # замок до 90 с, а служба пробуждения ограничена 300 с.
@@ -71,18 +79,14 @@ def window_end(now_local: datetime, slot: str) -> float:
 def in_window(now_local: datetime, slot: str) -> bool:
     h, m = now_local.hour, now_local.minute
     if slot == "morning":
-        return MORNING_WINDOW[0] <= h < MORNING_WINDOW[1]
+        return MORNING_WINDOW[0] <= (h, m) < MORNING_WINDOW[1]
     if slot == "search":
         return SEARCH_WINDOW[0] <= (h, m) < SEARCH_WINDOW[1]
     if slot == "search_day":
         return SEARCH_DAY_WINDOW[0] <= (h, m) < SEARCH_DAY_WINDOW[1]
     if slot == "midday":
         return MIDDAY_WINDOW[0] <= h < MIDDAY_WINDOW[1]
-    if h < EVENING_WINDOW[0]:
-        return False
-    if h < EVENING_WINDOW[1]:
-        return True
-    return h == EVENING_WINDOW[1] and m <= EVENING_LAST_MINUTE
+    return EVENING_WINDOW[0] <= (h, m) <= EVENING_WINDOW[1]
 
 
 def build_prompt(slot: str, today: date, prompt_file: str, journal_dir: str) -> tuple[str, str]:
@@ -149,6 +153,22 @@ def app_note(today: date) -> str:
         return _("Незакрытых «В приложение» за {days} дней нет (проверил код).").format(days=APP_OPEN_DAYS)
     return _("Незакрытые «В приложение» за {days} дней (собрал код по журналу, заново не искать):\n{lines}").format(
         days=APP_OPEN_DAYS, lines="\n".join(lines))
+
+
+def collected_note(slot: str, today: date) -> str:
+    """Сведения, собранные кодом для утра и вечера (аудит 11.2026, ux.md Н3, Н6).
+    Любой сбой даёт строки «не собрано», а не падение: пробуждение важнее сбора."""
+    if slot not in ("morning", "evening"):
+        return ""
+    try:
+        from . import wakenotes  # личные источники, в открытой копии модуля нет
+    except ImportError:
+        return ""
+    try:
+        return wakenotes.morning_note(today) if slot == "morning" else wakenotes.evening_note(today)
+    except Exception as e:  # noqa: BLE001
+        print(f"domovoy.wake: сбор сведений упал: {type(e).__name__}", file=sys.stderr)
+        return _("Сведения кодом не собраны (сбой сбора): собери источники по промту сам.")
 
 
 BRIEF_LIMIT = 6000
@@ -350,6 +370,10 @@ def main(argv: list[str] | None = None) -> int:
         # Утро без звука: уведомление и все сообщения рана приходят тихо, Иван
         # может ещё спать (просьба Ивана 09.10.2026). Вечер и сторож со звуком.
         payload["silent"] = True
+        # Вопросы утра делами: ответ продолжает разговор с момента вопроса
+        # (опыт В1, решение Ивана 26.10.2026; бот: docs/design-2026-10-26-v1.md).
+        # Старый бот поле не знает и шлёт обычные карточки.
+        payload["asks"] = "deal"
     if args.slot == "search":
         # Поиск в 07:30 начинает свежую сессию и идёт без звука: Иван может
         # спать, а вчерашняя сессия большая. Утро в 08:30 начнёт свою свежую
@@ -378,10 +402,15 @@ def main(argv: list[str] | None = None) -> int:
     if thread_id is not None:
         payload["thread_id"] = thread_id
     if args.dry_run:
+        if note := collected_note(args.slot, today):
+            prompt = f"{prompt}\n\n{note}"
         print(f"[dry-run] chat={chat_id} thread={thread_id}\n{title}\n{prompt}")
         return 0
 
     warning = refresh()
+    # Сведения кодом после синхронизации: журнал и таблицы уже свежие.
+    if note := collected_note(args.slot, today):
+        payload["prompt"] = f"{payload['prompt']}\n\n{note}"
     if warning:
         payload["prompt"] = f"{warning}\n\n{payload['prompt']}"
     # Поиск обязан кончиться до утра: окно проверяется ещё раз перед каждой
@@ -403,7 +432,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if not ok:
         print(f"domovoy.wake: /event не принят: {info}", file=sys.stderr)
+        note_wake_failure(args.slot, title, info, now_local)
         return 1
+    forget_wake_failures([args.slot])
     print(f"domovoy.wake: разбудил ({title})")
     return 0
 

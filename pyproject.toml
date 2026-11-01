@@ -2,6 +2,8 @@
 name = "domovoy"
 version = "0.2.0"
 description = "Domovoy: a proactive personal assistant on Claude Code (wake-ups, journal in git, Obsidian diary)"
+# Слушатель (domovoy.listen) требует 3.14: imaplib.IMAP4.idle; при старте он это проверяет.
+# Планка не поднята: открытая копия идёт без слушателя.
 requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.27",

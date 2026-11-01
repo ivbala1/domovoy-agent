@@ -48,6 +48,13 @@ def _watch_journal_in_tmp(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _wake_state_in_tmp(tmp_path, monkeypatch):
+    """Недошедшие пробуждения (аудит 11.2026) пишутся во временный каталог."""
+    from domovoy import wake, wakefail
+    monkeypatch.setattr(wakefail, "FAILED_FILE", tmp_path / "wake" / "failed.json")
+
+
+@pytest.fixture(autouse=True)
 def _sync_state_in_tmp(tmp_path, monkeypatch):
     """Строка сторожа в журнал берёт замок синхронизации (ревью 11.10.2026):
     в тестах его файл во временном каталоге, а не в живом состоянии."""

@@ -19,8 +19,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from domovoy import common  # noqa: E402
 from domovoy import wake  # noqa: E402
 
+import pytest  # noqa: E402
+
 TZ = ZoneInfo("Asia/Dubai")
 BASE_ENV = {"PATH": os.environ.get("PATH", "")}
+
+
+@pytest.fixture(autouse=True)
+def _no_live_collection(monkeypatch):
+    """Сбор сведений для утра и вечера ходит в сеть и в боевые данные: в этих
+    тестах он заглушен, его проверяет tests/test_wakenotes.py."""
+    monkeypatch.setattr(wake, "collected_note", lambda slot, today: "")
 
 
 def _at(h: int, m: int = 0) -> datetime:
@@ -34,7 +43,7 @@ def _env(**kw: str) -> dict[str, str]:
 class WindowTests(unittest.TestCase):
     def test_morning_window(self):
         self.assertTrue(wake.in_window(_at(8, 31), "morning"))
-        self.assertTrue(wake.in_window(_at(6, 0), "morning"))
+        self.assertFalse(wake.in_window(_at(6, 0), "morning"))
         self.assertFalse(wake.in_window(_at(12, 0), "morning"))
         self.assertFalse(wake.in_window(_at(15, 0), "morning"))
 
@@ -68,6 +77,18 @@ class WindowTests(unittest.TestCase):
         self.assertTrue(wake.in_window(_at(23, 30), "evening"))
         self.assertFalse(wake.in_window(_at(23, 31), "evening"))
         self.assertFalse(wake.in_window(_at(9, 0), "evening"))
+
+    def test_catch_up_before_slot_is_silent(self):
+        """Догон Persistent=true до планового часа пришёл за прошлый день: ПК
+        спал через вчерашние 08:30 и проснулся в 07:00. Сегодняшний таймер в
+        08:30 ещё сработает, поэтому догон молчит, иначе утро пришло бы дважды
+        и вторая свежая сессия стёрла бы первую (аудит 11.2026). Так же вечер."""
+        self.assertFalse(wake.in_window(_at(7, 0), "morning"))
+        self.assertFalse(wake.in_window(_at(8, 29), "morning"))
+        self.assertTrue(wake.in_window(_at(8, 30), "morning"))
+        self.assertFalse(wake.in_window(_at(19, 5), "evening"))
+        self.assertFalse(wake.in_window(_at(20, 29), "evening"))
+        self.assertTrue(wake.in_window(_at(20, 30), "evening"))
 
 
 class PromptTests(unittest.TestCase):
@@ -170,6 +191,30 @@ class MainTests(unittest.TestCase):
             rc = wake.main(["--morning", "--force"])
         self.assertEqual(rc, 1)
 
+    def test_post_failure_is_remembered_for_watch(self):
+        """Бот не принял утро: юнит падает, а Иван об этом не узнаёт, сказать
+        через бота нельзя. Сбой помнится на диске, его называет ближайший
+        прогон сторожа; удачное пробуждение того же слота сбой снимает (аудит 11.2026)."""
+        env = _env(DOMOVOY_CHAT_ID="183")
+        with patch.dict(os.environ, env, clear=True), patch.object(wake, "load_env"), \
+                patch.object(wake, "post_event", return_value=(False, "нет соединения после 3 попыток")):
+            wake.main(["--morning", "--force"])
+            wake.main(["--evening", "--force"])
+        failed = wake.wake_failures()
+        self.assertEqual(sorted(failed), ["evening", "morning"])
+        self.assertIn("нет соединения", failed["morning"]["info"])
+        self.assertEqual(failed["morning"]["title"], "Утро")
+        with patch.dict(os.environ, env, clear=True), patch.object(wake, "load_env"), \
+                patch.object(wake, "post_event", return_value=(True, "ok")):
+            wake.main(["--morning", "--force"])
+        self.assertEqual(sorted(wake.wake_failures()), ["evening"])
+
+    def test_dry_run_failure_not_remembered(self):
+        with patch.dict(os.environ, _env(DOMOVOY_CHAT_ID="183"), clear=True), patch.object(wake, "load_env"), \
+                patch.object(wake, "post_event", return_value=(False, "boom")):
+            wake.main(["--morning", "--dry-run", "--force"])
+        self.assertEqual(wake.wake_failures(), {})
+
     def test_payload_targets_private_chat_without_thread(self):
         with patch.dict(os.environ, _env(DOMOVOY_CHAT_ID="183", DOMOVOY_THREAD_ID=""), clear=True), \
                 patch.object(wake, "load_env"), \
@@ -256,6 +301,18 @@ class MainTests(unittest.TestCase):
         self.assertIs(payloads["morning"]["silent"], True)
         self.assertNotIn("silent", payloads["midday"])
         self.assertNotIn("silent", payloads["evening"])
+
+    def test_only_morning_asks_deals(self):
+        """Вопросы утра делами (опыт В1), вечер и день обычными карточками."""
+        with patch.dict(os.environ, _env(DOMOVOY_CHAT_ID="183"), clear=True), patch.object(wake, "load_env"), \
+                patch.object(wake, "post_event", return_value=(True, "ok")) as post:
+            payloads = {}
+            for slot in ("morning", "midday", "evening"):
+                wake.main([f"--{slot}", "--force"])
+                payloads[slot] = post.call_args.args[2]
+        self.assertEqual(payloads["morning"]["asks"], "deal")
+        for slot in ("midday", "evening"):
+            self.assertNotIn("asks", payloads[slot])
 
     def test_morning_and_evening_have_no_notice(self):
         """Утро и вечер без пустой карточки «🔔 Домовой: …», первым приходит
@@ -545,3 +602,13 @@ class WorkshopWakeTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+
+def test_forget_keeps_newer_failure_of_slot(tmp_path, monkeypatch):
+    from domovoy import wakefail
+    monkeypatch.setattr(wakefail, "FAILED_FILE", tmp_path / "failed.json")
+    wake.note_wake_failure("morning", "Утро", "первый", datetime(2026, 11, 2, 8, 31))
+    told = wake.wake_failures()
+    wake.note_wake_failure("morning", "Утро", "второй", datetime(2026, 11, 2, 8, 32))
+    wake.forget_wake_failures(["morning"], told)
+    assert wake.wake_failures()["morning"]["info"] == "второй"
