@@ -616,6 +616,7 @@ class SyncTests(unittest.TestCase):
                 sync.run(self.a)
         self.post.assert_called_once()
         self.assertIn("синхронизация стоит", self.post.call_args.args[2]["title"])
+        self.assertIs(self.post.call_args.args[2]["silent"], True)  # C48: без звука
         self.assertEqual(sync.run(self.a), sync.OK)
         with patch.object(sync, "git", side_effect=flaky):
             for _ in range(sync.FAIL_NOTIFY_AFTER):

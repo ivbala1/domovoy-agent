@@ -889,9 +889,15 @@ class BadDate(ValueError):
 
 def _parse_day(raw: str, now: datetime) -> date:
     try:
-        return date.fromisoformat(raw) if raw else diary_day(now)
+        day = date.fromisoformat(raw) if raw else diary_day(now)
     except ValueError as e:
         raise BadDate(str(e)) from None
+    # Будущий день это опечатка в году или месяце: завела бы файл дня, которого
+    # ещё не было (C42, решение Ивана 04.11.2026). Граница календарный день, а не
+    # день дневника: в 01:30 «--day сегодня» по календарю законно.
+    if day > now.date():
+        raise BadDate(_("день {day} ещё не наступил").format(day=day.isoformat()))
+    return day
 
 
 def _commit_text(result: str) -> str:

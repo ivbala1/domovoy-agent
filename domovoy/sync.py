@@ -253,7 +253,9 @@ def _notify_once(state_name: str, key: str, title: str, text: str) -> None:
     except ConfigError as e:
         print(f"domovoy.sync: сообщить «{title}» некуда: {e}", file=sys.stderr)
         return
-    payload: dict = {"source": _("синхронизация"), "title": title, "text": text, "wake": False, "chat_id": chat_id}
+    # Без звука, как неполадки сторожа и слушателя (решение Ивана 04.11.2026, C48).
+    payload: dict = {"source": _("синхронизация"), "title": title, "text": text, "wake": False,
+                     "chat_id": chat_id, "silent": True}
     if thread_id is not None:
         payload["thread_id"] = thread_id
     url, secret = bot_endpoint()

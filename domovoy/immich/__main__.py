@@ -110,9 +110,21 @@ def within(asset: Asset, start: datetime, end: datetime) -> bool:
     return start <= taken < end
 
 
+# День фото с 05.11.2026 начинается в 04:00, как день дневника (C23, решение
+# Ивана 04.11.2026): кадр в 00:40 идёт к рассказу о вечере, а не в завтра. Дни
+# до перехода остаются от полуночи, чтобы перепроверка закрытых дней не
+# повторяла ночные кадры в двух днях; 04.11 тянется до 05.11 04:00, без дыры.
+DAY_CUTOFF_SINCE = date(2026, 11, 5)
+
+
+def day_start(day: date, tz: ZoneInfo) -> datetime:
+    hour = diary.NIGHT_CUTOFF_HOUR if day >= DAY_CUTOFF_SINCE else 0
+    return datetime.combine(day, dtime(hour=hour), tzinfo=tz)
+
+
 def fetch_assets(client: httpx.Client, base: str, day: date, tz: ZoneInfo) -> list[Asset]:
-    start = datetime.combine(day, dtime.min, tzinfo=tz)
-    end = start + timedelta(days=1)
+    start = day_start(day, tz)
+    end = day_start(day + timedelta(days=1), tz)
     assets = [asset_from_api(i) for i in search_all(client, base, start.isoformat(), end.isoformat())]
     return [a for a in assets if within(a, start, end)]
 

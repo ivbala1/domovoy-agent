@@ -310,6 +310,20 @@ class FetchTests(unittest.TestCase):
         self.assertTrue(within(at("не дата"), start, end))
 
 
+    def test_photo_day_starts_at_diary_cutoff_from_switch(self):
+        """C23: с 05.11.2026 день фото с 04:00, как дневник; до перехода от полуночи, без дыры."""
+        from datetime import date, datetime
+        from zoneinfo import ZoneInfo
+
+        from domovoy.immich.__main__ import day_start
+
+        tz = ZoneInfo("Asia/Dubai")
+        self.assertEqual(day_start(date(2026, 11, 3), tz), datetime(2026, 11, 3, 0, tzinfo=tz))
+        self.assertEqual(day_start(date(2026, 11, 4), tz), datetime(2026, 11, 4, 0, tzinfo=tz))
+        self.assertEqual(day_start(date(2026, 11, 5), tz), datetime(2026, 11, 5, 4, tzinfo=tz))
+        self.assertEqual(day_start(date(2026, 11, 20), tz), datetime(2026, 11, 20, 4, tzinfo=tz))
+
+
 class RebuildTests(unittest.TestCase):
     """Перестройка закрытого дня: сбой сети не должен стоить уже сохранённых превью."""
 

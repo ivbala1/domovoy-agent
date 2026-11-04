@@ -107,6 +107,7 @@
  "выбрал «{answer}» на вопрос агента: {question}": "chose \"{answer}\" for the agent's question: {question}",
  "граница не проверяется: рабочий каталог или список заказчиков не читается": "boundary not checked: the working directory or the client list cannot be read",
  "граница не проверяется: рабочий каталог не определяется": "boundary not checked: the working directory cannot be determined",
+ "день {day} ещё не наступил": "day {day} has not come yet",
  "есть незакоммиченные изменения дневника: выполнить commit": "there are uncommitted diary changes: run commit",
  "закоммитить папку дневника": "commit the diary folder",
  "закоммичено": "committed",

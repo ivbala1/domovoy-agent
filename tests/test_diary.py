@@ -725,11 +725,23 @@ class RepeatAndRecoveryTests(VaultCase):
                 self.assertIn("запись не удалась", out)
                 self.assertNotIn("не понял дату", out)
         for argv in (("add", "--day", "2026-13-01", "--label", "день"), ("rollup", "--week", "2026-W60"),
-                     ("sessions", "--day", "вчера")):
+                     ("sessions", "--day", "вчера"),
+                     # C42: день из будущего (опечатка в годе или месяце) не заводит файл.
+                     ("fact", "Оплатил счёт", "--day", "2026-11-04"), ("mark", "--day", "2027-10-04")):
             with self.subTest(argv[0]):
                 rc, out = self.run_cli(*argv, stdin="Текст.\n")
                 self.assertEqual(rc, diary.ERROR)
                 self.assertIn("не понял дату", out)
+
+    def test_future_day_refused_calendar_today_allowed(self):
+        """C42: завтрашний день отказ без файла; в 01:30 календарное сегодня можно."""
+        rc, out = self.run_cli("fact", "Оплатил счёт", "--day", "2026-10-05")
+        self.assertEqual(rc, diary.ERROR)
+        self.assertIn("ещё не наступил", out)
+        self.assertFalse((self.day_path.parent / "2026-10-05.md").exists())
+        night = datetime(2026, 10, 5, 1, 30, tzinfo=TZ)
+        rc, out = self.run_cli("fact", "Досмотрели кино", "--day", "2026-10-05", now=night)
+        self.assertEqual(rc, diary.OK, out)
 
     def test_mark_on_day_without_header_is_an_error(self):
         self.day_path.write_text("Писал руками, без шапки.\n", encoding="utf-8")
