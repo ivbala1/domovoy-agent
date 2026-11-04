@@ -18,6 +18,11 @@ try:
 except ImportError:  # открытая копия без сторожа
     watch = None
 
+try:
+    from domovoy import reflect
+except ImportError:  # открытая копия без рефлексии
+    reflect = None
+
 i18n.set_language(os.environ.get("DOMOVOY_TEST_LANG", "ru"))
 
 
@@ -52,6 +57,13 @@ def _wake_state_in_tmp(tmp_path, monkeypatch):
     """Недошедшие пробуждения (аудит 11.2026) пишутся во временный каталог."""
     from domovoy import wake, wakefail
     monkeypatch.setattr(wakefail, "FAILED_FILE", tmp_path / "wake" / "failed.json")
+
+
+@pytest.fixture(autouse=True)
+def _reflect_state_in_tmp(tmp_path, monkeypatch):
+    """Утро читает состояние ночной рефлексии: в тестах не живой reflect.json."""
+    if reflect is not None:
+        monkeypatch.setattr(reflect, "STATE_FILE", tmp_path / "reflect.json")
 
 
 @pytest.fixture(autouse=True)

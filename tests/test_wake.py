@@ -56,6 +56,15 @@ class WindowTests(unittest.TestCase):
         self.assertFalse(wake.in_window(_at(6, 0), "search"))
         self.assertFalse(wake.in_window(_at(9, 0), "search"))
 
+    def test_prep_window(self):
+        """Подготовка только 06:30-07:00: до поиска 07:30 полчаса, поздний догон молчит."""
+        self.assertTrue(wake.in_window(_at(6, 30), "prep"))
+        self.assertTrue(wake.in_window(_at(6, 59), "prep"))
+        self.assertFalse(wake.in_window(_at(6, 29), "prep"))
+        self.assertFalse(wake.in_window(_at(7, 0), "prep"))
+        self.assertFalse(wake.in_window(_at(7, 30), "prep"))
+        self.assertFalse(wake.in_window(_at(8, 30), "prep"))
+
     def test_search_day_window(self):
         """Поиск днём только 15:00-15:30, поздний догон молчит."""
         self.assertTrue(wake.in_window(_at(15, 0), "search_day"))
@@ -393,7 +402,7 @@ class MainTests(unittest.TestCase):
             dt.now.side_effect = [_at(7, 59)] * 2 + [_at(8, 0)] * 3
             self.assertEqual(wake.main(["--search"]), 1)
         post.assert_called_once()
-        self.assertNotIn("окно поиска закрылось", out.getvalue())
+        self.assertNotIn("окно закрылось", out.getvalue())
 
     def test_search_outside_window_is_silent(self):
         with patch.dict(os.environ, _env(DOMOVOY_CHAT_ID="183"), clear=True), patch.object(wake, "load_env"), \
@@ -550,6 +559,8 @@ class WindowEndTests(unittest.TestCase):
         self.assertEqual(wake.window_end(at, "search"), datetime(2026, 10, 23, 8, 0, tzinfo=wake.TZ).timestamp())
         self.assertEqual(wake.window_end(at.replace(hour=15), "search_day"),
                          datetime(2026, 10, 23, 15, 30, tzinfo=wake.TZ).timestamp())
+        self.assertEqual(wake.window_end(at.replace(hour=6, minute=35), "prep"),
+                         datetime(2026, 10, 23, 7, 0, tzinfo=wake.TZ).timestamp())
 
 
 class WorkshopWakeTests(unittest.TestCase):
@@ -592,6 +603,36 @@ class WorkshopWakeTests(unittest.TestCase):
             code, post = self._run(["--job", "--brief-file", str(Path(d) / "нет.md")],
                                    DOMOVOY_WORKSHOP_CHAT_ID="-100", DOMOVOY_WORKSHOP_THREAD_ID="77")
             self.assertEqual(code, 1)
+
+    def test_prep_goes_to_workshop_quiet_with_deadline(self):
+        """Подготовка 06:30 (решение Ивана 03.11.2026): мастерская, свежая сессия,
+        без звука и карточки, срок старта 07:00, чтобы не задержать поиск 07:30."""
+        with patch.object(wake, "datetime") as dt:
+            dt.now.return_value = _at(6, 30)
+            code, post = self._run(["--prep"], DOMOVOY_WORKSHOP_CHAT_ID="-100", DOMOVOY_WORKSHOP_THREAD_ID="77")
+        payload = post.call_args.args[2]
+        self.assertEqual(code, 0)
+        self.assertEqual((payload["chat_id"], payload["thread_id"], payload["title"]), (-100, 77, "Подготовка"))
+        self.assertIs(payload["fresh"], True)
+        self.assertIs(payload["silent"], True)
+        self.assertIs(payload["notice"], False)
+        self.assertEqual(payload["expires_at"], _at(7, 0).timestamp())
+        self.assertIn("абзац «Подготовка утра»", payload["prompt"])
+        self.assertIn("workshop.md", payload["prompt"])
+        self.assertIsNotNone(post.call_args.kwargs["still_wanted"])
+
+    def test_prep_without_workshop_stays_silent(self):
+        """Без мастерской подготовку в личку не шлём: её пункты делает утро."""
+        code, post = self._run(["--prep", "--force"])
+        self.assertEqual(code, 0)
+        post.assert_not_called()
+
+    def test_prep_outside_window_is_silent(self):
+        with patch.object(wake, "datetime") as dt:
+            dt.now.return_value = _at(7, 5)
+            code, post = self._run(["--prep"], DOMOVOY_WORKSHOP_CHAT_ID="-100", DOMOVOY_WORKSHOP_THREAD_ID="77")
+        self.assertEqual(code, 0)
+        post.assert_not_called()
 
     def test_half_configured_workshop_is_error(self):
         code, post = self._run(["--search-day", "--force"], DOMOVOY_WORKSHOP_CHAT_ID="-100")

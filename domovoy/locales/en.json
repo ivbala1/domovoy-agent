@@ -77,6 +77,8 @@
  "Незакрытые «В приложение» за {days} дней (собрал код по журналу, заново не искать):\n{lines}": "Open “To the app” items for {days} days (collected by code from the journal, do not search again):\n{lines}",
  "Незакрытых «В приложение» за {days} дней нет (проверил код).": "No open “To the app” items for {days} days (checked by code).",
  "Одни и те же строки правились в двух местах: {shown}. Своя версия на {host} цела, на GitHub другая. Автосинхронизация встала, свести руками в ~/src/domovoy на {host}: git status покажет, что делать.": "The same lines were edited in two places: {shown}. Your version on {host} is intact, GitHub has a different one. Auto-sync has stopped; merge by hand in ~/src/domovoy on {host}: git status will show what to do.",
+ "Подготовка": "Prep",
+ "Подготовка утра, {day}. Действуй по промту Домового {prompt_file}, абзац «Подготовка утра»; журнал в {journal_dir} (файлы ГГГГ-ММ.md). Человека за клавиатурой нет: если запись в журнал отклонена или не подтверждена, не повторяй запрос и закончи ответ.": "Morning prep, {day}. Follow the Domovoy prompt {prompt_file}, paragraph \"Morning prep\"; journal in {journal_dir} (files YYYY-MM.md). Nobody is at the keyboard: if a journal write is rejected or not confirmed, do not retry, finish the answer.",
  "Поиск": "Search",
  "Поиск днём": "Daytime search",
  "Поиск днём, {day}. Действуй по промту Домового {prompt_file}, абзац «Поиск днём»; журнал в {journal_dir} (файлы ГГГГ-ММ.md). Коротко, для телефона, без markdown.": "Daytime search, {day}. Follow the Domovoy rules in {prompt_file}, the \"Daytime search\" paragraph; the journal is in {journal_dir} (files YYYY-MM.md). Short, for a phone, no markdown.",

@@ -45,13 +45,16 @@ def _write_failures(failed: dict[str, dict]) -> None:
     os.replace(tmp, FAILED_FILE)
 
 
-def note_wake_failure(slot: str, title: str, info: str, when: datetime) -> None:
+def note_wake_failure(slot: str, title: str, info: str, when: datetime) -> bool:
+    """False: записать не удалось, вызывающий не должен считать сбой названным."""
     try:
         failed = wake_failures()
         failed[slot] = {"at": when.isoformat(timespec="minutes"), "title": title, "info": info[:200]}
         _write_failures(failed)
     except OSError as e:
         print(f"domovoy.wake: сбой пробуждения не записан: {e}", file=sys.stderr)
+        return False
+    return True
 
 
 def forget_wake_failures(slots: list[str], told: dict[str, dict] | None = None) -> None:
@@ -68,6 +71,7 @@ def forget_wake_failures(slots: list[str], told: dict[str, dict] | None = None) 
 UNITS = {
     "domovoy-morning.service": ("morning", "Утро"),
     "domovoy-evening.service": ("evening", "Вечер"),
+    "domovoy-prep.service": ("prep", "Подготовка"),
     "domovoy-search.service": ("search", "Поиск"),
     "domovoy-search-day.service": ("search_day", "Поиск днём"),
 }
