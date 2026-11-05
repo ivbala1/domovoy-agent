@@ -74,6 +74,8 @@ UNITS = {
     "domovoy-prep.service": ("prep", "Подготовка"),
     "domovoy-search.service": ("search", "Поиск"),
     "domovoy-search-day.service": ("search_day", "Поиск днём"),
+    # Сторож цены билетов (05.11.2026): календарь цен не ответил или наряд не принят.
+    "domovoy-avia.service": ("avia", "Сторож цены билетов"),
 }
 FRESH = timedelta(minutes=15)
 
