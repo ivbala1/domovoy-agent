@@ -11,7 +11,7 @@ os.environ.setdefault("DOMOVOY_TZ", "Asia/Dubai")
 
 import pytest  # noqa: E402
 
-from domovoy import diary, i18n, sync  # noqa: E402
+from domovoy import diary, i18n, journal, sync  # noqa: E402
 
 try:
     from domovoy import watch
@@ -33,15 +33,16 @@ def _diary_lock_in_tmp(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _watch_journal_in_tmp(tmp_path, monkeypatch):
-    """Сторож пишет строку в журнал после доставки сводки: в тестах это
-    временный каталог, иначе прогон дописывал бы живой journal/."""
+    """Сторож и слушатель пишут строку в журнал (domovoy.journal): в тестах
+    это временный каталог, иначе прогон дописывал бы живой journal/."""
+    jdir = tmp_path / "journal"
+    jdir.mkdir()
+    monkeypatch.setattr(journal, "JOURNAL_DIR", jdir)
+    # Очередь строк, не дождавшихся замка синхронизации (ревью 11.10.2026).
+    monkeypatch.setattr(journal, "QUEUE_FILE", tmp_path / "watch" / "journal-queue.jsonl")
     if watch is None:
         return
-    journal = tmp_path / "journal"
-    journal.mkdir()
-    monkeypatch.setattr(watch, "JOURNAL_DIR", journal)
-    # Очередь строк, не дождавшихся замка синхронизации (ревью 11.10.2026).
-    monkeypatch.setattr(watch, "JOURNAL_QUEUE_FILE", tmp_path / "watch" / "journal-queue.jsonl")
+    monkeypatch.setattr(watch, "JOURNAL_DIR", jdir)
     # Файлы слушателя (разбуженное, пульс, замок отправки) тоже во временном каталоге.
     monkeypatch.setattr(watch, "LISTEN_DIR", tmp_path / "listen")
     # Срочное без ответа: тесты не читают живой data/srochno.md.
@@ -50,6 +51,9 @@ def _watch_journal_in_tmp(tmp_path, monkeypatch):
     # подменяют оценку одним ответом на весь прогон, и второй вопрос получил бы
     # те же оценки. Тесты отказа берут настоящую функцию (REAL_REJECT_SCORES).
     monkeypatch.setattr(watch, "reject_scores", lambda *a, **kw: {})
+    # Контекст чата Telegram (разбор 05.11.2026) по умолчанию прочитан и пуст:
+    # тесты не ходят в живой Telegram. Ветку сбоя проверяет test_watch_context.
+    monkeypatch.setattr(watch.sources, "telegram_context", lambda keys, budget=60: {k: [">> повод"] for k in keys})
 
 
 @pytest.fixture(autouse=True)

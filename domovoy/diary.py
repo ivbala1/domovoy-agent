@@ -30,7 +30,6 @@ import hashlib
 import json
 import os
 import re
-import signal
 import subprocess
 import sys
 import tempfile
@@ -39,8 +38,8 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from . import sessions
-from .common import STATE_ROOT, TZ, WEEKDAYS_SHORT_RU, load_env
+from . import proc, sessions
+from .common import STATE_ROOT, TZ, WEEKDAYS_SHORT_RU, load_env, reason_lines
 from .i18n import _, N_
 
 # Хранилище Obsidian; на машине владельца путь в DOMOVOY_VAULT_DIR (.env).
@@ -668,7 +667,8 @@ def git_debt(vault: Path) -> str:
     except (OSError, subprocess.TimeoutExpired) as e:
         return _("git не проверен ({error}): выполнить commit").format(error=type(e).__name__)
     if r.returncode != 0:
-        return _("git не проверен ({error}): выполнить commit").format(error=" ".join(r.stderr.split())[:200])
+        return _("git не проверен ({error}): выполнить commit").format(
+            error=" ".join(" ".join(reason_lines(r, 200, use_stdout=False)).split()))
     return _("есть незакоммиченные изменения дневника: выполнить commit") if r.stdout.strip() else ""
 
 
@@ -732,51 +732,12 @@ def git_lock():
 
 
 def run_git(vault: Path, *args: str) -> subprocess.CompletedProcess:
-    """git хранилища с таймаутом. Ревью 11.10.2026: по таймауту SIGTERM, а не
-    SIGKILL, как у subprocess.run. На SIGTERM git сам убирает свой
-    .git/index.lock, после SIGKILL замок оставался навсегда и останавливал
-    все коммиты. Сигнал идёт всей группе процессов: хук git тоже должен
-    кончиться. Не кончился за GIT_TERM_GRACE: SIGKILL. При прерывании или
-    другом исключении тоже завершаем всю группу и ждём git (ревью 11.10.2026)."""
-    proc = subprocess.Popen(
-        ["git", "-C", str(vault), *args],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
-    )
-    try:
-        out, err = proc.communicate(timeout=GIT_TIMEOUT)
-    except BaseException:
-        # Завершение git не означает завершение его хука (ревью 11.10.2026).
-        # Проверяем всю группу, а родителя попутно забираем, чтобы его зомби
-        # не продлевал ожидание. Замок нельзя отпустить с работающим git.
-        try:
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            deadline = time.monotonic() + GIT_TERM_GRACE
-            while True:
-                proc.poll()
-                try:
-                    os.killpg(proc.pid, 0)
-                except ProcessLookupError:
-                    break
-                except PermissionError:
-                    # Отказ проверки не доказывает, что группа исчезла.
-                    pass
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    try:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    break
-                time.sleep(min(0.05, remaining))
-            proc.wait()
-        finally:
-            proc.stdout.close()
-            proc.stderr.close()
-        raise
-    return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
+    """git хранилища с таймаутом через `proc.git` (ревизия повторов
+    07.11.2026): по сроку и любому исключению SIGTERM всей группе (git сам
+    убирает .git/index.lock, хук тоже кончается), через GIT_TERM_GRACE
+    SIGKILL и ожидание до минуты (proc._REAP_WAIT_TERM; раньше без предела).
+    Замок git_lock берёт вызывающий: запуск с ним не связан."""
+    return proc.git(vault, *args, timeout=GIT_TIMEOUT, grace=GIT_TERM_GRACE)
 
 
 def _status_paths(out: str) -> tuple[set[str], set[str], set[str]]:
@@ -827,7 +788,7 @@ def commit(vault: Path, message: str) -> str:
             # целиком каталог в коммит не попадал.
             r = git("status", "--porcelain", "-z", "--untracked-files=all", "--", *COMMIT_PATHS, *_NO_TMP)
             if r.returncode != 0:
-                return _("git status не прошёл: {error}").format(error=r.stderr.strip()[:200])
+                return _("git status не прошёл: {error}").format(error="\n".join(reason_lines(r, 200, use_stdout=False)))
             changed, dirty, fresh = _status_paths(r.stdout)
             paths = [p for p in COMMIT_PATHS if p in changed]
             if not paths:
@@ -842,14 +803,14 @@ def commit(vault: Path, message: str) -> str:
                 if group:
                     r = git("add", *flags, "--", *group, *_NO_TMP)
                     if r.returncode != 0:
-                        return _("git add не прошёл: {error}").format(error=r.stderr.strip()[:200])
+                        return _("git add не прошёл: {error}").format(error="\n".join(reason_lines(r, 200)))
             if git("diff", "--cached", "--quiet", "--", *paths, *_NO_TMP).returncode == 0:
                 return NOTHING_TO_COMMIT
             # С путями после «--» в коммит идут только они: чужое, что уже лежит
             # в индексе, остаётся как было.
             r = git("commit", "-q", "-m", message, "--", *paths, *_NO_TMP)
             if r.returncode != 0:
-                return _("git commit не прошёл: {error}").format(error=(r.stderr or r.stdout).strip()[:200])
+                return _("git commit не прошёл: {error}").format(error="\n".join(reason_lines(r, 200)))
     except TimeoutError as e:
         return _("git занят другим запуском (фото или запись), коммит отложен: {error}").format(error=e)
     except (OSError, subprocess.TimeoutExpired) as e:

@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from domovoy import diary  # noqa: E402
+from domovoy import proc as procmod  # noqa: E402
 
 TZ = ZoneInfo("Asia/Dubai")
 NOW = datetime(2026, 10, 4, 20, 45, tzinfo=TZ)
@@ -351,7 +352,7 @@ class RunGitCleanupTests(unittest.TestCase):
                 )
                 try:
                     self.assertEqual(proc.stdout.readline().strip(), "ready")
-                    with patch.object(diary.subprocess, "Popen", return_value=proc), \
+                    with patch.object(procmod.subprocess, "Popen", return_value=proc), \
                             patch.object(proc, "communicate", side_effect=error), \
                             patch.object(diary, "GIT_TERM_GRACE", 0.2):
                         with self.assertRaises(type(error)) as raised:
@@ -395,8 +396,8 @@ class RunGitCleanupTests(unittest.TestCase):
                 while not ready.exists() and time.monotonic() < deadline:
                     time.sleep(0.01)
                 self.assertTrue(ready.exists(), "дочерний процесс не запустился")
-                with patch.object(diary.subprocess, "Popen", return_value=proc), \
-                        patch.object(diary.os, "killpg", side_effect=send_group_signal) as sent, \
+                with patch.object(procmod.subprocess, "Popen", return_value=proc), \
+                        patch.object(procmod.os, "killpg", side_effect=send_group_signal) as sent, \
                         patch.object(diary, "GIT_TIMEOUT", 0.1), \
                         patch.object(diary, "GIT_TERM_GRACE", 0.2):
                     with self.assertRaises(subprocess.TimeoutExpired):
@@ -994,6 +995,21 @@ class CommitTests(VaultCase):
         self.assertFalse((self.vault / ".git" / "index.lock").exists())
         hook.unlink()
         self.assertEqual(diary.commit(self.vault, "дневник: проба"), "закоммичено")
+
+    def test_hook_refusal_reason_comes_first(self):
+        """Отказ хука pre-commit: причина первой строкой, строки git о концах
+        строк и подсказки ниже (ревью 08.11.2026, общая common.reason_lines)."""
+        self._init()
+        hook = self.vault / ".git" / "hooks" / "pre-commit"
+        hook.parent.mkdir(exist_ok=True)
+        hook.write_text("#!/bin/sh\necho \"warning: in the working copy of 'x', LF will be replaced by CRLF\" >&2\n"
+                        "echo 'pre-commit: коммит отклонён: причина' >&2\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+        self._git("config", "core.hooksPath", str(hook.parent))   # общий hooksPath машины не в счёт
+        self.day_path.write_text("день\n", encoding="utf-8")
+        self.assertEqual(diary.commit(self.vault, "дневник: проба"),
+                         "git commit не прошёл: pre-commit: коммит отклонён: причина\n"
+                         "warning: in the working copy of 'x', LF will be replaced by CRLF")
 
     def _hold_git_lock_while_git_runs(self) -> threading.Thread:
         """Свой git (коммит фото) идёт: держит замок git и .git/index.lock, через 0,3 с кончает."""

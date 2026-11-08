@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import subprocess
 import time
 import uuid
 from collections.abc import Callable, Iterable
@@ -185,3 +186,31 @@ def post_event(url: str, secret: str, payload: dict,
         if r.status_code != 200:
             return False, f"{r.status_code} {r.text[:200]}"
         return True, r.text[:200]
+
+
+# Строки git, которые идут раньше причины и сами её не называют (ревью
+# 08.11.2026): адрес у отказа push, подсказки, предупреждение о концах строк.
+GIT_NOT_REASON = ("To ", "hint:", "warning: in the working copy of ")
+
+
+def _git_lines(text: str | None) -> list[str]:
+    # Пустая строка хука на удалённом приходит как «remote:» с пробелами.
+    return [line.rstrip() for line in (text or "").splitlines() if line.strip() not in ("", "remote:")]
+
+
+def reason_lines(proc: subprocess.CompletedProcess, limit: int, use_stdout: bool = True) -> list[str]:
+    """Вывод git строками, причина первой, для текста ошибки: первую строку
+    видит владелец (уведомление синхронизации берёт её начало). Строки stderr;
+    нет среди них причины (пусто или только GIT_NOT_REASON), за ними stdout.
+    Первой идёт первая строка не из GIT_NOT_REASON, нет такой, просто первая;
+    предел limit знаков на всё после выбора причины. Нет вывода: [].
+    use_stdout=False для команд, чей stdout данные, а не текст (status -z)."""
+    lines = _git_lines(proc.stderr)
+    if use_stdout and not any(not line.lstrip().startswith(GIT_NOT_REASON) for line in lines):
+        lines += _git_lines(proc.stdout)
+    if not lines:
+        return []
+    at = next((i for i, line in enumerate(lines) if not line.lstrip().startswith(GIT_NOT_REASON)), 0)
+    lines.insert(0, lines.pop(at).strip())
+    out = "\n".join(lines)[:limit].rstrip()
+    return out.split("\n") if out else []

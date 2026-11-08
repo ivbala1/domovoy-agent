@@ -58,7 +58,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import IO, NamedTuple
 
-from .common import REPO_ROOT, STATE_ROOT, TZ, ConfigError, bot_endpoint, load_env, post_event, read_target
+from . import proc
+from .common import (REPO_ROOT, STATE_ROOT, TZ, ConfigError, bot_endpoint, load_env, post_event, read_target,
+                     reason_lines)
 from .i18n import _
 
 # reviews/: еженедельный разбор (domovoy.review), ревью Codex 22.10.2026.
@@ -92,16 +94,38 @@ class GitError(Exception):
     pass
 
 
+def _brief(args: tuple[str, ...]) -> str:
+    """Команда коротко для текста GitError: подкоманда и число путей после «--».
+    Сообщение коммита и пути длинные, а уведомление о полосе сбоев показывает
+    только начало первой строки: причина (отказ хука pre-commit) до него не
+    доходила (08.11.2026)."""
+    rest = list(args)
+    while len(rest) >= 2 and rest[0] == "-c":
+        rest = rest[2:]
+    command = f"git {rest[0]}" if rest else "git"
+    # rebase и rebase --abort различимы: таймаут бывает у обоих.
+    if rest[1:2] and rest[1] in ("--abort", "--continue", "--skip"):
+        command += f" {rest[1]}"
+    if "--" not in rest:
+        return command
+    return _("{command}, путей: {count}").format(command=command, count=len(rest) - rest.index("--") - 1)
+
+
 def git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    """Причина в тексте GitError первой, команда коротко после её первой строки,
+    остальной вывод git ниже: первую строку видит владелец в уведомлении."""
+    # Через proc.git (ревизия повторов 07.11.2026): по сроку SIGTERM группе,
+    # git сам убирает index.lock. subprocess.run слал SIGKILL, замок оставался,
+    # и следующие коммиты и rebase --abort стояли.
     try:
-        proc = subprocess.run(
-            ["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=GIT_TIMEOUT,
-        )
+        r = proc.git(repo, *args, timeout=GIT_TIMEOUT)
     except subprocess.TimeoutExpired as e:
-        raise GitError(_("git {args}: таймаут {timeout} с").format(args=' '.join(args), timeout=GIT_TIMEOUT)) from e
-    if check and proc.returncode != 0:
-        raise GitError(f"git {' '.join(args)}: {(proc.stderr or proc.stdout).strip()[:500]}")
-    return proc
+        raise GitError(_("таймаут {timeout} с ({command})").format(timeout=GIT_TIMEOUT, command=_brief(args))) from e
+    if check and r.returncode != 0:
+        lines = reason_lines(r, 500)
+        reason = lines[0] if lines else _("код выхода {code}, без текста").format(code=r.returncode)
+        raise GitError("\n".join([f"{reason} ({_brief(args)})", *lines[1:]]))
+    return r
 
 
 def changed_data_paths(repo: Path) -> list[str]:
@@ -386,12 +410,10 @@ def flush_watch_queue() -> None:
     """Отложенные строки сторожа в журнал под замком прогона (ревью
     11.10.2026, второй круг): иначе очередь ждала бы следующей строки
     сторожа, а тихие прогоны её не переносят."""
+    from . import journal
+
     try:
-        from . import watch
-    except ImportError:  # открытая копия без сторожа
-        return
-    try:
-        watch.journal_flush_queue(datetime.now(TZ).date())
+        journal.flush_queue(datetime.now(TZ).date())
     except OSError as e:
         print(f"domovoy.sync: очередь строк сторожа не перенесена: {e}", file=sys.stderr)
 
@@ -528,9 +550,9 @@ def _sync(repo: Path, notify: bool, dry_run: bool) -> tuple[int, str, Stop]:
 
     fetch = git(repo, "fetch", "-q", REMOTE, BRANCH, check=False)
     if fetch.returncode != 0:
-        detail = (fetch.stderr or fetch.stdout).strip().splitlines()
+        detail = reason_lines(fetch, 200)
         return _fail(OFFLINE, _("GitHub недоступен, повтор на следующем прогоне")
-                     + (f" ({detail[0][:200]})" if detail else ""))
+                     + (f" ({detail[0]})" if detail else ""))
     upstream = f"{REMOTE}/{BRANCH}"
     behind = _count(repo, f"HEAD..{upstream}")
     if dry_run:
@@ -573,7 +595,7 @@ def _sync(repo: Path, notify: bool, dry_run: bool) -> tuple[int, str, Stop]:
             if not files:
                 # Не конфликт (замок индекса, неотслеживаемый файл на пути
                 # подтянутого): следующий прогон повторит сам, человек не нужен.
-                return _fail(ERROR, _("rebase не прошёл: {output}").format(output=(rebase.stderr or rebase.stdout).strip()[:300]))
+                return _fail(ERROR, _("rebase не прошёл: {output}").format(output="\n".join(reason_lines(rebase, 300))))
             report_conflict(repo, files, notify)
             # Rebase откатан, маркеров в дереве нет, но данные с другой машины
             # не подтянуты: пробуждение должно это знать (ревью 11.10.2026).
@@ -596,8 +618,9 @@ def _sync(repo: Path, notify: bool, dry_run: bool) -> tuple[int, str, Stop]:
         push = git(repo, "push", "-q", REMOTE, f"HEAD:{BRANCH}", check=False)
         if push.returncode != 0:
             # Чаще всего гонка: другая машина отправила между fetch и push.
-            # Следующий прогон подтянет и отправит.
-            return _fail(OFFLINE, _("отправка не прошла: {output}").format(output=push.stderr.strip()[:300]))
+            # Следующий прогон подтянет и отправит. Первой строкой git печатает
+            # «To <адрес>», причина ниже: её ставит первой reason_lines.
+            return _fail(OFFLINE, _("отправка не прошла: {output}").format(output="\n".join(reason_lines(push, 300))))
         print(f"domovoy.sync: отправлено коммитов: {ahead}")
     return OK, "", Stop()
 

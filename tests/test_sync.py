@@ -159,7 +159,7 @@ class SyncTests(unittest.TestCase):
             if args[:1] == ("rebase",) and "--abort" not in args:
                 # Rebase встал посреди работы, и тут его убил таймаут.
                 real(repo, "rebase", "-q", "--exec", "false", "origin/main", check=False)
-                raise sync.GitError("git rebase: таймаут 60 с")
+                raise sync.GitError("таймаут 60 с (git rebase)")
             return real(repo, *args, check=check)
 
         with patch.object(sync, "git", side_effect=git_with_timeout):
@@ -408,26 +408,25 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(g(self.remote, "rev-parse", "main"), before)
         self.assertIn("data/table.md", self.post.call_args.args[2]["text"])
 
-    @unittest.skipUnless((Path(__file__).resolve().parents[1] / "domovoy" / "watch.py").exists(),
-                         "в открытой копии сторожа нет")
     def test_queued_watch_line_goes_out_with_next_sync(self):
         """Ревью 11.10.2026 (второй круг, 1): строка сторожа, не дождавшаяся
         замка, уходит в журнал и на GitHub следующим прогоном синхронизации, а
         не только следующей строкой сторожа (тихие прогоны её не переносят)."""
         from datetime import datetime
 
-        from domovoy import watch
+        from domovoy import journal
         from domovoy.common import TZ
         with patch.object(sync, "DATA_LOCK_WAIT_SEC", 0):
             held = sync._lock(0)
             try:
-                watch.journal_append(datetime(2026, 9, 21, 9, 10, tzinfo=TZ), ["Почта: S"], self.a / "journal")
+                journal.append_or_raise("Сторож", ["Почта: S"], datetime(2026, 9, 21, 9, 10, tzinfo=TZ),
+                                        self.a / "journal")
             finally:
                 held.close()
         self.assertNotIn("Почта: S", (self.a / "journal" / "2026-09.md").read_text(encoding="utf-8"))
         self.assertEqual(sync.run(self.a), sync.OK)
         self.assertIn("Почта: S", self.remote_file("journal/2026-09.md"))
-        self.assertFalse(watch.JOURNAL_QUEUE_FILE.exists())
+        self.assertFalse(journal.QUEUE_FILE.exists())
 
     def test_wake_with_busy_lock_gets_conflict_warning(self):
         """Ревью 11.10.2026 (второй круг, 4): пробуждение не дождалось замка, а
@@ -606,7 +605,7 @@ class SyncTests(unittest.TestCase):
             if args[:1] == ("fetch",):
                 n[0] += 1
                 if n[0] % 2:
-                    raise sync.GitError("git fetch -q origin main: таймаут 60 с")
+                    raise sync.GitError("таймаут 60 с (git fetch)")
                 return subprocess.CompletedProcess(
                     args, 128, "", f"Connection closed by 140.82.121.{n[0]} port 22\n")
             return real(repo, *args, check=check)
@@ -622,6 +621,124 @@ class SyncTests(unittest.TestCase):
             for _ in range(sync.FAIL_NOTIFY_AFTER):
                 sync.run(self.a)
         self.assertEqual(self.post.call_count, 2)
+
+    def test_hook_refusal_reason_reaches_notification(self):
+        """Хук pre-commit (gitleaks в своих репозиториях с 08.11.2026) отклонил
+        коммит данных с несколькими путями: уведомление называет причину, а не
+        аргументы git commit. Раньше первые 200 знаков первой строки занимали
+        сообщение коммита и пути, и причина до владельца не доходила."""
+        reason = ("pre-commit: коммит отклонён: gitleaks нашёл похожее на секрет в индексе (2): "
+                  "data/table.md:1, data/voronka.md:1")
+        hook = self.a / ".git" / "hooks" / "pre-commit"
+        hook.parent.mkdir(exist_ok=True)
+        hook.write_text(f"#!/bin/sh\necho '{reason}' >&2\necho '  совет' >&2\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+        write(self.a, "journal/2026-09.md", "## 2026-09-21\nПлан: x\nСделано: x\n")
+        write(self.a, "data/table.md", "| компания |\n")
+        write(self.a, "data/voronka.md", "| вакансия |\n")
+        for _ in range(sync.FAIL_NOTIFY_AFTER):
+            self.assertEqual(sync.run(self.a), sync.ERROR)
+        self.post.assert_called_once()
+        text = self.post.call_args.args[2]["text"]
+        self.assertIn(f"{reason} (git commit, путей: 3)", text)
+        self.assertNotIn("автосинхронизация", text)
+        self.assertNotIn("совет", text)
+
+    def test_git_error_names_reason_before_command(self):
+        """Текст GitError: причина первой, команда коротко после неё, без
+        сообщения коммита и путей. stderr из пробелов: причина из stdout; CRLF;
+        подсказки и предупреждение о концах строк перед причиной уходят ниже;
+        нет вывода, код выхода; предел 500 знаков после выбора причины; пустая
+        строка хука удалённого; в stderr только шум, причина в stdout."""
+        commit = ("commit", "-q", "-m", "данные: x", "--", "a.md", "b.md")
+        crlf = "warning: in the working copy of 'data/%d.md', LF will be replaced by CRLF the next time Git touches it"
+        cases = [
+            ((1, "", "\n".join(crlf % i for i in range(6)) + "\npre-commit: отказ\n"),
+             # Предел 500 на текст с причиной первой: «pre-commit: отказ\n» 18 знаков.
+             "pre-commit: отказ (git commit, путей: 2)\n" + "\n".join(crlf % i for i in range(6))[:482].rstrip()),
+            ((1, "", "remote: \nremote: причина\nTo x\n"), "remote: причина (git commit, путей: 2)\nTo x"),
+            ((1, "nothing to commit\n", crlf % 0 + "\n"), f"nothing to commit (git commit, путей: 2)\n{crlf % 0}"),
+            ((1, "", "fatal: причина\n  подробности\n"), "fatal: причина (git commit, путей: 2)\n  подробности"),
+            ((1, "nothing to commit\n", " \n"), "nothing to commit (git commit, путей: 2)"),
+            ((1, "", "причина\r\nещё\r\n"), "причина (git commit, путей: 2)\nещё"),
+            ((1, "", "hint: The hook was ignored\nwarning: in the working copy of 'a.md', LF will be "
+                     "replaced by CRLF\n\npre-commit: отказ\n  деталь\n"),
+             "pre-commit: отказ (git commit, путей: 2)\nhint: The hook was ignored\n"
+             "warning: in the working copy of 'a.md', LF will be replaced by CRLF\n  деталь"),
+            ((3, "", ""), "код выхода 3, без текста (git commit, путей: 2)"),
+        ]
+        for (code, out, err), expected in cases:
+            with self.subTest(err=err or out), \
+                    patch.object(sync.proc, "git", return_value=subprocess.CompletedProcess([], code, out, err)), \
+                    self.assertRaises(sync.GitError) as caught:
+                sync.git(self.a, *commit)
+            self.assertEqual(str(caught.exception), expected)
+        long = subprocess.CompletedProcess([], 1, "", "x" * 600 + "\nхвост\n")
+        with patch.object(sync.proc, "git", return_value=long), self.assertRaises(sync.GitError) as caught:
+            sync.git(self.a, "-c", "core.quotePath=false", "log", "--format=")
+        self.assertEqual(str(caught.exception), "x" * 500 + " (git log)")
+        self.assertEqual(sync.git(self.a, "rev-parse", "--verify", "нет-такого", check=False).returncode, 128)
+        # Предел пришёлся на перевод строки: пустой строки в конце нет.
+        self.assertEqual(sync.reason_lines(subprocess.CompletedProcess([], 1, "", "abc\ndef\n"), 4), ["abc"])
+        self.assertEqual(sync.reason_lines(subprocess.CompletedProcess([], 1, "", "abc\n"), 0), [])
+        status = subprocess.CompletedProcess([], 1, "a\0b\0", "warning: in the working copy of x\n")
+        self.assertEqual(sync.reason_lines(status, 100, use_stdout=False), ["warning: in the working copy of x"])
+
+    def test_git_timeout_names_command_briefly(self):
+        """Таймаут: та же короткая команда, rebase и rebase --abort различимы,
+        исходное исключение в __cause__."""
+        for args, expected in ((("commit", "-m", "данные: x", "--", "a.md"), "таймаут 60 с (git commit, путей: 1)"),
+                               (("rebase", "--abort"), "таймаут 60 с (git rebase --abort)"),
+                               (("rebase", "-q", "--autostash", "origin/main"), "таймаут 60 с (git rebase)")):
+            with self.subTest(args=args), \
+                    patch.object(sync.proc, "git", side_effect=subprocess.TimeoutExpired("git", 60)), \
+                    self.assertRaises(sync.GitError) as caught:
+                sync.git(self.a, *args)
+            self.assertEqual(str(caught.exception), expected)
+            self.assertIsInstance(caught.exception.__cause__, subprocess.TimeoutExpired)
+
+    def streak_notice(self, command: str, code: int, stderr: str, expected_code: int) -> str:
+        """Текст уведомления о полосе сбоев, когда git <command> раз за разом
+        отвечает code и stderr, а остальной git настоящий."""
+        real = sync.git
+
+        def failing(repo, *args, check=True):
+            if args[:1] == (command,) and "--abort" not in args:
+                return subprocess.CompletedProcess(args, code, "", stderr)
+            return real(repo, *args, check=check)
+
+        with patch.object(sync, "git", side_effect=failing):
+            for _ in range(sync.FAIL_NOTIFY_AFTER):
+                self.assertEqual(sync.run(self.a), expected_code)
+        self.post.assert_called_once()
+        return self.post.call_args.args[2]["text"]
+
+    def test_push_refusal_reason_reaches_notification(self):
+        """Отказ push: git печатает первой строкой «To <адрес>», причина ниже.
+        Уведомление о полосе сбоев называет причину (ревью 08.11.2026)."""
+        write(self.a, "data/table.md", "| компания |\n")
+        text = self.streak_notice("push", 1, (
+            "To github.com:owner/repo.git\n ! [rejected]        HEAD -> main (fetch first)\n"
+            "error: failed to push some refs to 'github.com:owner/repo.git'\nhint: Updates were rejected\n"),
+            sync.OFFLINE)
+        self.assertIn("отправка не прошла: ! [rejected]        HEAD -> main (fetch first). ", text)
+
+    def test_fetch_failure_reason_reaches_notification(self):
+        """Ветка fetch берёт причину той же common.reason_lines: подсказка
+        перед причиной уходит ниже."""
+        text = self.streak_notice("fetch", 128, "hint: x\nfatal: unable to access: Could not resolve host\n",
+                                  sync.OFFLINE)
+        self.assertIn("GitHub недоступен, повтор на следующем прогоне (fatal: unable to access: "
+                      "Could not resolve host). ", text)
+
+    def test_rebase_failure_reason_reaches_notification(self):
+        """Rebase без конфликта (замок индекса, неотслеживаемый файл на пути):
+        причина в уведомлении, подсказка ниже."""
+        write(self.b, "prompt.md", "правила v2\n")
+        g(self.b, "commit", "-qam", "промт с другой машины")
+        g(self.b, "push", "-q", "origin", "main")
+        text = self.streak_notice("rebase", 1, "hint: x\nerror: причина отказа\n", sync.ERROR)
+        self.assertIn("rebase не прошёл: error: причина отказа. ", text)
 
     def wake_prompt(self) -> str:
         """Утреннее пробуждение на этом репозитории: что получил агент."""
