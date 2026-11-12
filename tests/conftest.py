@@ -47,6 +47,8 @@ def _watch_journal_in_tmp(tmp_path, monkeypatch):
     monkeypatch.setattr(watch, "LISTEN_DIR", tmp_path / "listen")
     # Срочное без ответа: тесты не читают живой data/srochno.md.
     monkeypatch.setattr(watch, "SROCHNO_FILE", tmp_path / "srochno.md")
+    # Воронка для отказа после этапа (10.11.2026): тесты не читают живой data/voronka.md.
+    monkeypatch.setattr(watch, "CONTACTS_FILE", tmp_path / "voronka.md")
     # Вопрос об автоотказе (22.10.2026) по умолчанию «отказов нет»: тесты прогона
     # подменяют оценку одним ответом на весь прогон, и второй вопрос получил бы
     # те же оценки. Тесты отказа берут настоящую функцию (REAL_REJECT_SCORES).

@@ -128,7 +128,7 @@ class PromptTests(unittest.TestCase):
         t, p = wake.build_prompt("search", date(2026, 10, 15), "P", "J")
         self.assertEqual(t, "Поиск")
         self.assertTrue(p.startswith("Поиск, 2026-10-15 (четверг). Действуй по промту Домового P"))
-        self.assertIn("абзац «Поиск»", p)
+        self.assertNotIn("абзац", p)
         self.assertIn("J", p)
         self.assertNotIn("Утро", p)
 
@@ -136,7 +136,7 @@ class PromptTests(unittest.TestCase):
         t, p = wake.build_prompt("search_day", date(2026, 10, 22), "P", "J")
         self.assertEqual(t, "Поиск днём")
         self.assertTrue(p.startswith("Поиск днём, 2026-10-22 (четверг). Действуй по промту Домового P"))
-        self.assertIn("абзац «Поиск днём»", p)
+        self.assertNotIn("абзац", p)
         self.assertNotIn("Человека за клавиатурой нет", p)
 
 class MainTests(unittest.TestCase):
@@ -275,6 +275,7 @@ class MainTests(unittest.TestCase):
             rc = wake.main(["--morning", "--force", "--dry-run", "--day", "2026-09-20"])
         self.assertEqual(rc, 0)
         self.assertIn("пробный запуск", out.getvalue())
+        self.assertIn("ничего не пиши и не отправляй", out.getvalue())
         self.assertIn("2026-09-14", out.getvalue())
         self.assertIn("2026-09-20", out.getvalue())
 
@@ -352,7 +353,7 @@ class MainTests(unittest.TestCase):
         self.assertIs(payload["fresh"], True)
         self.assertIs(payload["silent"], True)
         self.assertIs(payload["notice"], False)
-        self.assertIn("абзац «Поиск»", payload["prompt"])
+        self.assertNotIn("абзац", payload["prompt"])
 
     def test_search_day_payload(self):
         """Поиск 15:00: дневная сессия (не свежая), без звука, без карточки
@@ -617,7 +618,7 @@ class WorkshopWakeTests(unittest.TestCase):
         self.assertIs(payload["silent"], True)
         self.assertIs(payload["notice"], False)
         self.assertEqual(payload["expires_at"], _at(7, 0).timestamp())
-        self.assertIn("абзац «Подготовка утра»", payload["prompt"])
+        self.assertNotIn("абзац", payload["prompt"])
         self.assertIn("workshop.md", payload["prompt"])
         self.assertIsNotNone(post.call_args.kwargs["still_wanted"])
 

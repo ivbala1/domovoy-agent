@@ -24,23 +24,21 @@ Exit-коды: 0 записано или нечего делать, 1 ошибк
 from __future__ import annotations
 
 import argparse
-import errno
-import fcntl
 import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
-import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from . import proc, sessions
+from . import proc, sessions, statefile
 from .common import STATE_ROOT, TZ, WEEKDAYS_SHORT_RU, load_env, reason_lines
 from .i18n import _, N_
+from .statefile import flock, write_atomic
 
 # Хранилище Obsidian; на машине владельца путь в DOMOVOY_VAULT_DIR (.env).
 DEFAULT_VAULT = Path.home() / "Obsidian"
@@ -109,14 +107,7 @@ class DayFileChanged(RuntimeError):
     """Файл менялся при каждой попытке записи (Obsidian, Syncthing)."""
 
 
-def _drop(tmp_name: str) -> None:
-    try:
-        os.unlink(tmp_name)
-    except FileNotFoundError:
-        pass
-
-
-TMP_SUFFIX = ".tmp"
+TMP_SUFFIX = statefile.TMP_SUFFIX
 TMP_STALE_SEC = 600
 # Общий замок всех своих писателей дневника (команды дневника и фото из
 # Immich). Лежит на ext4 в каталоге состояния, а не в хранилище на drvfs:
@@ -133,23 +124,15 @@ def write_lock(wait: float | None = None, lock_file: Path | None = None):
     другой только у замка git (git_lock, ревью 11.10.2026)."""
     wait = LOCK_WAIT_SEC if wait is None else wait
     lock_file = LOCK_FILE if lock_file is None else lock_file
-    lock_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_file, "a") as f:
-        deadline = time.monotonic() + wait
-        while True:
-            try:
-                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(
-                        _("замок дневника {lock_file} занят дольше {wait:g} с").format(lock_file=lock_file, wait=wait)
-                    ) from None
-                time.sleep(0.1)
-        try:
-            yield
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+    held = ExitStack()
+    try:
+        held.enter_context(flock(lock_file, wait))
+    except TimeoutError:
+        raise TimeoutError(
+            _("замок дневника {lock_file} занят дольше {wait:g} с").format(lock_file=lock_file, wait=wait)
+        ) from None
+    with held:
+        yield
 
 
 def sweep_tmp(folder: Path) -> None:
@@ -205,35 +188,21 @@ def _rewrite_locked(path: Path, transform, skeleton: str | None, retries: int, e
         if new_text == current:
             return False
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=TMP_SUFFIX, dir=path.parent)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(new_text)
-                f.flush()
-                try:
-                    os.fsync(f.fileno())
-                except OSError as e:
-                    # drvfs может не уметь fsync, и только это простительно:
-                    # настоящая ошибка записи не должна кончиться подменой
-                    # исправного файла ненадёжной копией.
-                    if e.errno not in (errno.EINVAL, errno.ENOTSUP, errno.ENOSYS):
-                        raise
+
+        def untouched() -> bool:
             if before is None:
-                changed = path.exists()
-            else:
-                now = path.stat()
-                changed = (now.st_ino, now.st_mtime_ns, now.st_size) != (
-                    before.st_ino, before.st_mtime_ns, before.st_size,
-                )
-            if changed:
-                _drop(tmp_name)
-                time.sleep(0.05)
-                continue
-            os.replace(tmp_name, path)
+                return not path.exists()
+            now = path.stat()
+            return (now.st_ino, now.st_mtime_ns, now.st_size) == (
+                before.st_ino, before.st_mtime_ns, before.st_size,
+            )
+
+        # drvfs может не уметь fsync, и только это простительно ("lenient"):
+        # настоящая ошибка записи не должна кончиться подменой исправного
+        # файла ненадёжной копией.
+        if write_atomic(path, new_text, fsync="lenient", check=untouched):
             return True
-        except Exception:
-            _drop(tmp_name)
-            raise
+        time.sleep(0.05)
     raise DayFileChanged(_("{name}: файл менялся {retries} раза подряд во время записи").format(name=path.name, retries=retries))
 
 

@@ -9,13 +9,12 @@ wake.py за последние минуты уже записал причин�
 """
 from __future__ import annotations
 
-import json
-import os
 import sys
 from datetime import datetime, timedelta
 
 # Только common: импорт wake и его зависимостей упал бы вместе с тем, о чём пишем.
 from .common import STATE_ROOT, TZ
+from .statefile import flock, read_json, write_json
 
 # Пробуждения, которые бот не принял (аудит 11.2026): юнит падает, повтора нет,
 # а сказать Ивану через лежащего бота нельзя. Сбой лежит здесь, его называет
@@ -24,13 +23,17 @@ from .common import STATE_ROOT, TZ
 FAILED_FILE = STATE_ROOT / "wake" / "failed.json"
 
 
+# Чтение, правка и запись failed.json под замком: участников пять (wake, avia,
+# interview, сторож, юнит OnFailure), без замка новый сбой мог пропасть.
+LOCK_WAIT_SEC = 10
+
+
+def _lock():
+    return flock(FAILED_FILE.with_suffix(".lock"), LOCK_WAIT_SEC)
+
+
 def wake_failures() -> dict[str, dict]:
-    try:
-        raw = json.loads(FAILED_FILE.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    if not isinstance(raw, dict):
-        return {}
+    raw = read_json(FAILED_FILE, {})
     return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, dict)
             and all(isinstance(v.get(f), str) for f in ("at", "title", "info"))}
 
@@ -40,17 +43,16 @@ def _write_failures(failed: dict[str, dict]) -> None:
         FAILED_FILE.unlink(missing_ok=True)
         return
     FAILED_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = FAILED_FILE.with_suffix(f".{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(failed, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, FAILED_FILE)
+    write_json(FAILED_FILE, failed)
 
 
 def note_wake_failure(slot: str, title: str, info: str, when: datetime) -> bool:
     """False: записать не удалось, вызывающий не должен считать сбой названным."""
     try:
-        failed = wake_failures()
-        failed[slot] = {"at": when.isoformat(timespec="minutes"), "title": title, "info": info[:200]}
-        _write_failures(failed)
+        with _lock():
+            failed = wake_failures()
+            failed[slot] = {"at": when.isoformat(timespec="minutes"), "title": title, "info": info[:200]}
+            _write_failures(failed)
     except OSError as e:
         print(f"domovoy.wake: сбой пробуждения не записан: {e}", file=sys.stderr)
         return False
@@ -60,10 +62,11 @@ def note_wake_failure(slot: str, title: str, info: str, when: datetime) -> bool:
 def forget_wake_failures(slots: list[str], told: dict[str, dict] | None = None) -> None:
     """told: снимок, о котором уже сказали; новый сбой того же слота остаётся."""
     try:
-        failed = wake_failures()
-        gone = [s for s in slots if s in failed and (told is None or failed[s] == told.get(s))]
-        if gone:
-            _write_failures({k: v for k, v in failed.items() if k not in gone})
+        with _lock():
+            failed = wake_failures()
+            gone = [s for s in slots if s in failed and (told is None or failed[s] == told.get(s))]
+            if gone:
+                _write_failures({k: v for k, v in failed.items() if k not in gone})
     except OSError as e:
         print(f"domovoy.wake: сбой пробуждения не снят: {e}", file=sys.stderr)
 

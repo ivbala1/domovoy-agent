@@ -102,9 +102,11 @@ def test_month_file_and_heading():
 def test_no_own_month_file_or_day_heading_outside_journal():
     """Тест-преграда: файл месяца и разделы дня журнала только через
     domovoy.journal. `startswith("## ")` вне журнала разрешён только там, где
-    режут не журнал (промт, BACKLOG, ответ разбора)."""
+    режут не журнал (промт, BACKLOG, ответ разбора, разделы data/regulyarnoe.md,
+    воронка в watch.funnel_rows)."""
     pkg = Path(journal.__file__).parent
-    allowed_heads = {"promptparts.py": 1, "review.py": 2, "selfcheck.py": 1}
+    allowed_heads = {"promptparts.py": 1, "review.py": 2, "selfcheck.py": 1, "life.py": 1, "wakenotes.py": 1,
+                     "watch.py": 1}
     month = re.compile(r"%Y-%m\}\.md|%Y-%m['\"]\)\s*(\}|\+)\s*['\"]?\.md|\}-\{\w+:02d\}\.md|month:02d")
     own_day = re.compile(r"## \(\\d\{4\}|\^## |\[:3\] == ['\"]## |startswith\(['\"]##['\"]\)")
     bad = []

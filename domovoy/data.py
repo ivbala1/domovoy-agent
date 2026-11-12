@@ -25,8 +25,15 @@ append дописывает в конец существующего катал�
 все или ни одного. Текст сверяется с файлом под замком, поэтому устаревшее
 чтение не перетрёт чужую правку. Концы строк и права файла сохраняются.
 
+Тексты правил (`prompt.md`, `diary.md`, шапки `data/*.md`) ран бота (есть
+`CLAUDE_TG_CHAT_KEY`) не пишет: их правит настольная сессия по «ок» Ивана,
+через ревью (сессии, запущенные ботом на ПК, эту переменную не получают).
+`data/popravki.md` ран бота пишет. Запись, после которой тексты правил вместе
+или поправки выходят за предел `promptparts`, отклоняется, если она их не
+уменьшает.
+
 Граница защиты: бот отказывает Write и Edit по этим путям, но запись через
-Bash (`>>`, `sed -i`) не ловит; это правило промта, а не запрет кодом.
+Bash (`>>`, `sed -i`) не ловит; запрет здесь ограждает привычку, а не защищает.
 """
 from __future__ import annotations
 
@@ -34,10 +41,11 @@ import argparse
 import os
 import re
 import sys
-import tempfile
 from pathlib import Path
 
+from . import promptparts as pp
 from .common import REPO_ROOT
+from .statefile import write_atomic
 
 # Что считается общими данными: те же пути, что коммитит синхронизация.
 DATA_DIRS = ("journal", "data")
@@ -127,23 +135,8 @@ def apply_edit(current: str, blocks: list[tuple[str, str]]) -> str:
 
 
 def _write(path: Path, text: str) -> None:
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-        if path.exists():
-            mode = path.stat().st_mode & 0o777
-        else:
-            umask = os.umask(0)
-            os.umask(umask)
-            mode = 0o666 & ~umask
-        os.chmod(tmp, mode)
-        os.replace(tmp, path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
+    """Файл данных целиком или прежний, права прежнего файла сохраняются."""
+    write_atomic(path, text, mode=None)
 
 
 def _read(path: Path) -> str:
@@ -162,6 +155,36 @@ def _git_stuck(root: Path) -> list[str]:
     except Exception:
         gitdir = root / ".git"
     return [name for name in sync.STUCK_NAMES if (gitdir / name).exists()]
+
+
+POPRAVKI = "data/popravki.md"
+
+
+def check_rules(root: Path, path: Path, current: str, new: str) -> None:
+    """Отказ, если запись меняет тексты правил там, где нельзя: ран бота правит
+    prompt.md, diary.md или шапку таблицы; тексты правил вместе или поправки
+    после записи за пределом и не уменьшились."""
+    rel = path.relative_to(root).as_posix()
+    if rel.startswith("journal/"):
+        return
+    rules = rel in DATA_FILES or rel == POPRAVKI or (
+        bool(current) and pp.data_header(current) != pp.data_header(new))
+    if not rules:
+        return
+    if os.environ.get("CLAUDE_TG_CHAT_KEY") and rel != POPRAVKI:
+        raise Refused(f"domovoy.data: {rel}: тексты правил ран бота не правит (их правит настольная сессия "
+                      "по «ок» Ивана); исполни поправку сейчас и запиши её строкой в data/popravki.md; "
+                      "ничего не записано")
+    before, after = pp.rules_total(root), pp.rules_total(root, {rel: new})
+    if rel == "prompt.md":
+        # Новая беда раскладки отклоняется, если правка не укорачивает файл.
+        fresh = set(pp.problems(pp.split(new))) - set(pp.problems(pp.split(current)))
+        if fresh and len(new.encode()) >= len(current.encode()):
+            raise Refused(f"domovoy.data: prompt.md: {'; '.join(sorted(fresh))}; ничего не записано")
+    if pp.rules_problems(after) and sum(after.values()) > sum(before.values()):
+        hint = ("исполни поправку и запиши строкой журнала «Поправка Ивана: …»" if rel == POPRAVKI
+                else "убери лишнее в той же правке или не вноси")
+        raise Refused(f"domovoy.data: {'; '.join(pp.rules_problems(after))}; {hint}; ничего не записано")
 
 
 def run(cmd: str, rel: str, stdin: str, root: Path = REPO_ROOT, lock=None) -> str:
@@ -190,11 +213,16 @@ def run(cmd: str, rel: str, stdin: str, root: Path = REPO_ROOT, lock=None) -> st
             nl = "\r\n" if "\r\n" in current else "\n"
             sep = "" if not current or current.endswith("\n") else nl
             body = stdin.rstrip("\r\n").replace("\r\n", "\n").replace("\n", nl)
-            _write(path, current + sep + body + nl)
+            new = current + sep + body + nl
+            check_rules(root.resolve(), path, current, new)
+            _write(path, new)
             return f"{'создан новый файл и дописано' if created else 'дописано'}: {rel}"
         if not path.exists():
             raise Refused(f"domovoy.data: {rel} нет, для нового файла есть append")
-        _write(path, apply_edit(_read(path), blocks))
+        current = _read(path)
+        new = apply_edit(current, blocks)
+        check_rules(root.resolve(), path, current, new)
+        _write(path, new)
         return f"заменено: {rel}, блоков {len(blocks)}"
 
 

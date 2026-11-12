@@ -20,6 +20,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from .common import JOURNAL_DIR, REPO_ROOT, STATE_ROOT, WEEKDAYS_SHORT_RU
+from .statefile import append_jsonl, flock, write_atomic
 
 DAY_RE = re.compile(r"^## (\d{4}-\d\d-\d\d)\b")
 # Очередь строк, не дождавшихся замка синхронизации (ревью 11.10.2026). Путь
@@ -150,8 +151,7 @@ def append_or_raise(who: str, lines: list[str], when: datetime, journal_dir: Pat
         # старых строк, новая не теряется, а ждёт в очереди вместе с ними.
         try:
             with _queue_lock():
-                with QUEUE_FILE.open("a", encoding="utf-8") as f:
-                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                append_jsonl(QUEUE_FILE, entry)
         except OSError as e:
             if not locked:
                 raise
@@ -171,11 +171,7 @@ def _queue_lock() -> Iterator[None]:
     """Свой замок очереди (ревью 11.10.2026, второй круг): дописать строку
     может параллельный прогон сторожа, пока очередь переносят, а перенос без
     замка удалил бы её вместе с перенесёнными."""
-    import fcntl
-
-    QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(QUEUE_FILE.with_suffix(".lock"), "w") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+    with flock(QUEUE_FILE.with_suffix(".lock")):
         yield
 
 
@@ -191,7 +187,9 @@ def flush_queue(today: date) -> None:
         return
     with _queue_lock():
         try:
-            rest = QUEUE_FILE.read_text(encoding="utf-8").splitlines()
+            # Битый UTF-8 не роняет перенос: оборванная строка пропустится ниже,
+            # испорченный байт внутри значения уйдёт в журнал символом U+FFFD.
+            rest = QUEUE_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
         except FileNotFoundError:
             return
         while rest:
@@ -203,9 +201,7 @@ def flush_queue(today: date) -> None:
                             str(item.get("who") or "Сторож"))
             except (ValueError, KeyError, TypeError) as e:
                 print(f"domovoy.journal: строка очереди журнала не прочитана ({e!r}), пропускаю", file=sys.stderr)
-            tmp = QUEUE_FILE.with_suffix(".tmp")
-            tmp.write_text("".join(f"{x}\n" for x in rest), encoding="utf-8")
-            tmp.replace(QUEUE_FILE)
+            write_atomic(QUEUE_FILE, "".join(f"{x}\n" for x in rest))
         QUEUE_FILE.unlink(missing_ok=True)
 
 

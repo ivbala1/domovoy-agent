@@ -27,10 +27,8 @@
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
-import tempfile
 import time
 from dataclasses import asdict
 from datetime import date, datetime, time as dtime, timedelta
@@ -42,6 +40,7 @@ import httpx
 from .. import diary
 from ..common import TZ, load_env, STATE_ROOT
 from ..i18n import _
+from ..statefile import read_json, write_atomic, write_json
 from .core import (
     AmbiguousPhotosBlock,
     pick_key_frames,
@@ -176,10 +175,8 @@ def download_preview(client: httpx.Client, base: str, asset: Asset, dest: Path) 
             data = r2.content
 
         dest.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(prefix=dest.name + ".", suffix=".tmp", dir=dest.parent)
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-        os.replace(tmp, dest)
+        # Превью лежит в хранилище на drvfs: fsync прощается, как у дневника.
+        write_atomic(dest, data, fsync="lenient")
         return True
     except Exception as e:  # noqa: BLE001 — превью не критично
         print(f"immich: превью {asset.id[:8]} не скачалось: {e}", file=sys.stderr)
@@ -189,24 +186,12 @@ def download_preview(client: httpx.Client, base: str, asset: Asset, dest: Path) 
 def atomic_state(path: Path, state: dict) -> None:
     """Состояние вне дневника, атомарно (ревью 11.10.2026)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
-    finally:
-        Path(tmp).unlink(missing_ok=True)
+    write_json(path, state)
 
 
 def read_state(day: date) -> dict:
-    try:
-        state = json.loads((PHOTOS_STATE / f"{day}.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    # Битый файл состояния не роняет прогон (ревью 11.10.2026).
-    return state if isinstance(state, dict) else {}
+    # Битый файл состояния не роняет прогон (ревью 11.10.2026), а откладывается.
+    return read_json(PHOTOS_STATE / f"{day}.json", {})
 
 
 def save_state(day: date, state: dict) -> bool:

@@ -45,23 +45,21 @@ Exit-коды: 0 успех или нечего делать, 1 ошибка git
 from __future__ import annotations
 
 import argparse
-import fcntl
-import json
 import re
 import socket
 import subprocess
 import sys
-import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import IO, NamedTuple
+from typing import NamedTuple
 
 from . import proc
 from .common import (REPO_ROOT, STATE_ROOT, TZ, ConfigError, bot_endpoint, load_env, post_event, read_target,
                      reason_lines)
 from .i18n import _
+from .statefile import flock, read_json, write_json
 
 # reviews/: еженедельный разбор (domovoy.review), ревью Codex 22.10.2026.
 DATA_PATHS = ("prompt.md", "diary.md", "journal", "data", "reviews")
@@ -227,19 +225,14 @@ def dirty_code_paths(repo: Path) -> list[str]:
     return [entry[3:] for entry in out.split("\0") if entry]
 
 
-def _lock(wait: float) -> IO[str] | None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    f = open(STATE_DIR / "sync.lock", "w")
-    deadline = time.monotonic() + wait
-    while True:
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return f
-        except BlockingIOError:
-            if time.monotonic() >= deadline:
-                f.close()
-                return None
-            time.sleep(1)
+def _lock(wait: float) -> ExitStack | None:
+    """Взятый замок прогона (закрывают .close()) или None, если не дождались."""
+    held = ExitStack()
+    try:
+        held.enter_context(flock(STATE_DIR / "sync.lock", wait, poll=1))
+    except TimeoutError:
+        return None
+    return held
 
 
 @contextmanager
@@ -267,11 +260,8 @@ def _notify_once(state_name: str, key: str, title: str, text: str) -> None:
     """Одно сообщение в личный диалог без пробуждения на один и тот же ключ:
     синхронизация идёт раз в 15 минут, а сообщать о стоящей надо один раз."""
     state_file = STATE_DIR / state_name
-    try:
-        if json.loads(state_file.read_text(encoding="utf-8")).get("key") == key:
-            return
-    except (OSError, ValueError):
-        pass
+    if read_json(state_file, {}).get("key") == key:
+        return
     try:
         chat_id, thread_id = read_target()
     except ConfigError as e:
@@ -286,7 +276,7 @@ def _notify_once(state_name: str, key: str, title: str, text: str) -> None:
     ok, info = post_event(url, secret, payload)
     if ok:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
-        state_file.write_text(json.dumps({"key": key}), encoding="utf-8")
+        write_json(state_file, {"key": key})
     else:
         print(f"domovoy.sync: сообщение «{title}» не принято: {info}", file=sys.stderr)
 
@@ -426,7 +416,7 @@ def save_stop(stop: Stop) -> None:
     path = STATE_DIR / "stop.json"
     if stop.kind:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(stop._asdict(), ensure_ascii=False), encoding="utf-8")
+        write_json(path, stop._asdict())
     else:
         path.unlink(missing_ok=True)
 
@@ -439,11 +429,8 @@ def saved_stop(wait: float | None = None) -> Stop:
     with data_lock(wait) as locked:
         if not locked:
             return Stop(RUNNING)
-        try:
-            data = json.loads((STATE_DIR / "stop.json").read_text(encoding="utf-8"))
-            return Stop(str(data.get("kind", "")), str(data.get("detail", "")))
-        except (OSError, ValueError, AttributeError):
-            return Stop()
+        data = read_json(STATE_DIR / "stop.json", {})
+        return Stop(str(data.get("kind", "")), str(data.get("detail", "")))
 
 
 def _fail(code: int, message: str) -> tuple[int, str, Stop]:
@@ -461,12 +448,12 @@ def count_failure(code: int, error: str, notify: bool) -> None:
             (STATE_DIR / name).unlink(missing_ok=True)
         return
     try:
-        count = int(json.loads(path.read_text(encoding="utf-8")).get("count", 0))
-    except (OSError, ValueError, AttributeError):
+        count = int(read_json(path, {}).get("count", 0))
+    except (TypeError, ValueError):
         count = 0
     count += 1
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"count": count}), encoding="utf-8")
+    write_json(path, {"count": count})
     if count < FAIL_NOTIFY_AFTER or not notify:
         return
     first = (error.strip().splitlines() or ["?"])[0][:200]

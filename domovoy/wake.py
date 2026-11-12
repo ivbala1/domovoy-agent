@@ -115,33 +115,33 @@ def build_prompt(slot: str, today: date, prompt_file: str, journal_dir: str) -> 
             "что план предложен и не сохранён."
         ).format(day=day, common=common)
     if slot == "prep":
-        # Что готовить, написано в промте (абзац «Подготовка утра»): код
+        # Что готовить, написано в промте (раздел «Утро и вечер»): код
         # называет только момент. Ивану подготовка не пишет, итог в журнал.
         return _("Подготовка"), _(
-            "Подготовка утра, {day}. Действуй по промту Домового {prompt_file}, абзац «Подготовка утра»; "
+            "Подготовка утра, {day}. Действуй по промту Домового {prompt_file}; "
             "журнал в {journal_dir} (файлы ГГГГ-ММ.md). Человека за клавиатурой нет: если запись в журнал "
             "отклонена или не подтверждена, не повторяй запрос и закончи ответ."
         ).format(day=day, prompt_file=prompt_file, journal_dir=journal_dir)
     if slot == "search":
         # Что искать, как отправлять и чем отчитаться, написано в промте
-        # (абзац «Поиск»): код называет только момент. Дневник поиску не
+        # (раздел «Поиск работы»): код называет только момент. Дневник поиску не
         # нужен, поэтому без common.
         return _("Поиск"), _(
-            "Поиск, {day}. Действуй по промту Домового {prompt_file}, абзац «Поиск»; "
+            "Поиск, {day}. Действуй по промту Домового {prompt_file}; "
             "журнал в {journal_dir} (файлы ГГГГ-ММ.md). Коротко, для телефона, без markdown. "
             "Человека за клавиатурой нет: если запись в журнал отклонена или не подтверждена, "
             "не повторяй запрос и закончи ответ."
         ).format(day=day, prompt_file=prompt_file, journal_dir=journal_dir)
     if slot == "search_day":
         # Иван днём не спит, поэтому без оговорки «человека нет»: что делать,
-        # написано в промте (абзац «Поиск днём»).
+        # написано в промте (раздел «Поиск работы»).
         return _("Поиск днём"), _(
-            "Поиск днём, {day}. Действуй по промту Домового {prompt_file}, абзац «Поиск днём»; "
+            "Поиск днём, {day}. Действуй по промту Домового {prompt_file}; "
             "журнал в {journal_dir} (файлы ГГГГ-ММ.md). Коротко, для телефона, без markdown."
         ).format(day=day, prompt_file=prompt_file, journal_dir=journal_dir)
     if slot == "midday":
-        # Что именно проверять и когда молчать, написано в промте (абзац «Днём»):
-        # код называет только момент дня.
+        # Что именно проверять и когда молчать, написано в промте: код называет
+        # только момент дня.
         return _("День"), _(
             "День, {day}. {common} Человека за клавиатурой нет: если запись "
             "в журнал отклонена или не подтверждена, не повторяй запрос и закончи ответ."
@@ -184,7 +184,7 @@ def collected_note(slot: str, today: date) -> str:
         return wakenotes.morning_note(today) if slot == "morning" else wakenotes.evening_note(today)
     except Exception as e:  # noqa: BLE001
         print(f"domovoy.wake: сбор сведений упал: {type(e).__name__}", file=sys.stderr)
-        return _("Сведения кодом не собраны (сбой сбора): собери источники по промту сам.")
+        return _("Сведения кодом не собраны (сбой сбора).")
 
 
 BRIEF_LIMIT = 6000
@@ -192,7 +192,7 @@ BRIEF_LIMIT = 6000
 
 def workshop_note() -> str:
     return _("Ты в мастерской Домового: сначала прочитай {workshop_file} (правила мастерской, "
-             "модели субагентов, какие абзацы промта нужны), из {prompt_file} читай только эти абзацы.").format(
+             "модели субагентов), из {prompt_file} ядро и нужные наряду разделы.").format(
         workshop_file=WORKSHOP_FILE, prompt_file=PROMPT_FILE)
 
 
@@ -373,8 +373,8 @@ def main(argv: list[str] | None = None) -> int:
         title = _("{title} (пробный запуск)").format(title=title)
         prompt = _(
             "⚠️ ПРОБНЫЙ ЗАПУСК, дата подставлена флагом --day. Реальная дата "
-            "{real_date} ({weekday}), в тексте ниже "
-            "{date}.\n\n{prompt}"
+            "{real_date} ({weekday}), в тексте ниже {date}. Покажи, что сделал бы; "
+            "ничего не пиши и не отправляй.\n\n{prompt}"
         ).format(real_date=real_today.isoformat(), weekday=_(WEEKDAYS_RU[real_today.weekday()]),
                  date=today.isoformat(), prompt=prompt)
     payload: dict = {

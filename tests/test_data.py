@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from domovoy import data  # noqa: E402
+from domovoy import promptparts as pp  # noqa: E402
 
 
 @contextlib.contextmanager
@@ -142,6 +145,64 @@ class DataWriteEdgeTests(DataWriteTests):
             self.skipTest("нет rebase-merge в STUCK_NAMES")
         with self.assertRaises(data.Refused):
             self.run_cmd("append", "journal/2026-10.md", "x")
+
+
+class RulesWallTests(DataWriteTests):
+    """Тексты правил: ран бота их не пишет, сумма и поправки под пределом."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.zhdet = self.root / "data" / "zhdet.md"
+        self.zhdet.write_text("# Ждёт\n\nФормат строки.\n\n- дело\n", encoding="utf-8")
+
+    def bot(self):
+        return mock.patch.dict(os.environ, {"CLAUDE_TG_CHAT_KEY": "123:0"})
+
+    def test_bot_run_refused_on_rule_files(self) -> None:
+        with self.bot():
+            for rel in ("prompt.md", "diary.md"):
+                with self.subTest(rel=rel), self.assertRaises(data.Refused):
+                    self.run_cmd("append", rel, "новое правило")
+            with self.assertRaises(data.Refused):
+                self.run_cmd("edit", "data/zhdet.md", _edit("Формат строки.\n", "Каждое утро весь список.\n"))
+            self.run_cmd("append", "data/zhdet.md", "- ещё дело")           # строки данных можно
+            self.run_cmd("edit", "data/zhdet.md", _edit("- дело\n", "- дело, снято\n"))
+            self.run_cmd("append", "data/popravki.md", "- 2026-11-12 «по пятницам зал не ставь»")
+        self.assertFalse((self.root / "prompt.md").exists())
+        self.assertIn("Формат строки.", self.zhdet.read_text(encoding="utf-8"))
+
+    def test_bot_run_updates_key_value_and_json_data(self) -> None:
+        pakety = self.root / "data" / "pakety.md"
+        pakety.write_text("# Пакеты\n\nСроки пакетов.\n\nСвязь до: 2026-11-13\nЗвонки до: 2026-11-20\n", encoding="utf-8")
+        bilety = self.root / "data" / "bilety.md"
+        bilety.write_text('# Билеты\n\nУсловия.\n\n```json\n{"price": 16000}\n```\n', encoding="utf-8")
+        with self.bot():
+            self.run_cmd("edit", "data/pakety.md", _edit("Связь до: 2026-11-13\n", "Связь до: 2026-12-13\n"))
+            self.run_cmd("edit", "data/bilety.md", _edit('{"price": 16000}\n', '{"price": 15000}\n'))
+            with self.assertRaises(data.Refused):
+                self.run_cmd("edit", "data/pakety.md", _edit("Сроки пакетов.\n", "Каждое утро напоминай.\n"))
+
+    def test_desktop_session_may_edit_header(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CLAUDE_TG_CHAT_KEY", None)
+            self.run_cmd("edit", "data/zhdet.md", _edit("Формат строки.\n", "Формат: дело.\n"))
+
+    def test_popravki_over_limit_refused(self) -> None:
+        line = "- 2026-11-12 «" + "я" * 200 + "»"
+        with self.bot():
+            for _ in range(pp.POPRAVKI_MAX_BYTES // len(line.encode())):
+                self.run_cmd("append", "data/popravki.md", line)
+            with self.assertRaises(data.Refused) as cm:
+                self.run_cmd("append", "data/popravki.md", line)
+        self.assertIn("Поправка Ивана", str(cm.exception))
+
+    def test_total_wall_refuses_growth_allows_shrink(self) -> None:
+        os.environ.pop("CLAUDE_TG_CHAT_KEY", None)
+        with mock.patch.object(pp, "RULES_MAX_BYTES", 200):
+            (self.root / "diary.md").write_text("д" * 150, encoding="utf-8")
+            with self.assertRaises(data.Refused):
+                self.run_cmd("append", "diary.md", "ещё правило")
+            self.run_cmd("edit", "diary.md", _edit("д" * 150 + "\n", "д" * 10 + "\n"))
 
 
 if __name__ == "__main__":
